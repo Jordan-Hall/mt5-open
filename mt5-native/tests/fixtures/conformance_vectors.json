@@ -1,0 +1,1148 @@
+{
+  "format": "mt5-wire-conformance-vectors",
+  "revision": 3,
+  "origin": "synthetic offline fixtures, not live traffic",
+  "byte_strings": "hex, lowercase, no separators",
+  "large_integers": "Decimal strings are used where preserving 64-bit precision matters.",
+  "cases": [
+    {
+      "id": "credential-01",
+      "operation": "credential_digest_and_challenge_response",
+      "inputs": {
+        "login": "12345678",
+        "password": "ExamplePassword",
+        "server_challenge_hex": "000102030405060708090a0b0c0d0e0f"
+      },
+      "expected": {
+        "password_utf16le_hex": "4500780061006d0070006c006500500061007300730077006f0072006400",
+        "credential_digest_hex": "fb4823de3770686792d6b73aec3396f9",
+        "response_hex": "6adecffd4d9459a1de1621b4323809c3",
+        "custom_md5_block_hex": "000102030405060708090a0b0c0d0e0f800000000000000000000000000000000000000000000000000000000000000000000000000000008000000000000000"
+      }
+    },
+    {
+      "id": "hardware-01",
+      "operation": "deterministic_hardware_id",
+      "inputs": {
+        "login": "12345678"
+      },
+      "expected": {
+        "hardware_id_hex": "cf7445431d288e5e9c813a2af6c8ea79"
+      }
+    },
+    {
+      "id": "utf16-01",
+      "operation": "password_truncation_and_hash",
+      "inputs": {
+        "login": "12345678",
+        "password": "abcdefghijklmnopTAIL",
+        "utf16_code_unit_limit": 16
+      },
+      "expected": {
+        "encoded_password_hex": "6100620063006400650066006700680069006a006b006c006d006e006f007000",
+        "credential_digest_hex": "a311c7e3d06fceaa0ca375e4fd5985a1"
+      }
+    },
+    {
+      "id": "utf16-02",
+      "operation": "password_truncation_and_hash",
+      "inputs": {
+        "login": "12345678",
+        "password": "123456789012345\ud83d\ude42",
+        "utf16_code_unit_limit": 16
+      },
+      "expected": {
+        "encoded_password_hex": "310032003300340035003600370038003900300031003200330034003500fdff",
+        "credential_digest_hex": "a77cfa685bbf7de1399268dacff60160"
+      }
+    },
+    {
+      "id": "utf16-03",
+      "operation": "password_truncation_and_hash",
+      "inputs": {
+        "login": "12345678",
+        "password": "\ud800",
+        "utf16_code_unit_limit": 16
+      },
+      "expected": {
+        "encoded_password_hex": "fdff",
+        "credential_digest_hex": "628798b0c8c5df27c094acb403d2a590"
+      }
+    },
+    {
+      "id": "startup-00",
+      "operation": "startup_transform",
+      "inputs": {
+        "key_hex": "41b67f58380cf02d7b3908fe21bb4158",
+        "plaintext_hex": ""
+      },
+      "expected": {
+        "ciphertext_hex": ""
+      }
+    },
+    {
+      "id": "startup-01",
+      "operation": "startup_transform",
+      "inputs": {
+        "key_hex": "41b67f58380cf02d7b3908fe21bb4158",
+        "plaintext_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f2021"
+      },
+      "expected": {
+        "ciphertext_hex": "41f677cc0009ff2baeeefcf11ed41b7cad72e328749593d74a9ab8add290cf38592e"
+      }
+    },
+    {
+      "id": "startup-02",
+      "operation": "startup_transform",
+      "inputs": {
+        "key_hex": "41b67f58380cf02d7b3908fe21bb4158",
+        "plaintext_hex": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "expected": {
+        "ciphertext_hex": "41f776ce0612022faae3ebe90ac5065e9f55d42c6470608d08414947682364bc"
+      }
+    },
+    {
+      "id": "startup-03",
+      "operation": "startup_transform",
+      "inputs": {
+        "key_hex": "41b67f58380cf02d7b3908fe21bb4158",
+        "plaintext_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff"
+      },
+      "expected": {
+        "ciphertext_hex": "41f677cc0009ff2baeeefcf11ed41b7cad72e328749593d74a9ab8add290cf38592e8fc4d8c197e37686a489866c83f4058a3ba0eccd8b8f32526065ba48b73031a667fc70396fdb1e1e6c210e848bacbd22f318044563c71a0a481d6240df68c91eff3408710753a6b6d4b9b61c33e4557a8b90bcbddb7f82c2b0d58a380720e11617eca0299f4b4e0e9c11bef4bb9c4d92834814b533f7eaba58cd72b06f58394e6f6438e17703d6a604a9668c6314e52a1bc04ced6b2f12f240851a6817d0d146079c10d90ffbbe3e8c41aea42b4c5dc29338a46583673aaa68bd02607f08a9bedfd4e811e7f38656b45996bc1384351a6b309c5dbb1f626290756ad8e7c0"
+      }
+    },
+    {
+      "id": "hello-01",
+      "operation": "hello_frame",
+      "inputs": {
+        "login": "12345678",
+        "client_build": 5500,
+        "sequence": 1,
+        "hardware_id_hex": "cf7445431d288e5e9c813a2af6c8ea79",
+        "nonce_byte": 90,
+        "random_i32": 305419896
+      },
+      "expected": {
+        "plaintext": {
+          "length": 34,
+          "hex": "5a007c154d514e61bc0000000000cf7445431d288e5e9c813a2af6c8ea7978563412",
+          "sha256": "43f096200be8068a7076e06b9c75a52ce3a277e974185ef79a540e293b7d346f"
+        },
+        "frame": {
+          "length": 43,
+          "hex": "0022000000010002001bd12c9184c1ff4d74adb5b3d48f1f0301f46eeea8ea46f257ba34faf1d56e90e589",
+          "sha256": "26764f24c26d35f20a0443c3d82ba221f7ca05a9e07d40c531c67cd0072bdfb4"
+        }
+      }
+    },
+    {
+      "id": "auth-basic",
+      "operation": "authentication_frame",
+      "inputs": {
+        "login": "12345678",
+        "password": "ExamplePassword",
+        "challenge_hex": "000102030405060708090a0b0c0d0e0f",
+        "client_challenge_hex": "101112131415161718191a1b1c1d1e1f",
+        "nonce_u16": 4660,
+        "sequence": 2,
+        "otp": null
+      },
+      "expected": {
+        "plaintext": {
+          "length": 34,
+          "hex": "34126adecffd4d9459a1de1621b4323809c3101112131415161718191a1b1c1d1e1f",
+          "sha256": "95586458488b42117e19a75675e90d0eda492b9bd19dcc846fdaf23e3fa6b844"
+        },
+        "frame": {
+          "length": 43,
+          "hex": "0122000000020002007539d2f4e3124fe83ad20414147b8ede160f9ee70d0aee0e9fcfcfd4efb1ee5b8227",
+          "sha256": "131ddf344473e93784ddc55516d1252d4a1f4f76bf81102934ce50550eaed188"
+        }
+      }
+    },
+    {
+      "id": "auth-otp",
+      "operation": "authentication_frame",
+      "inputs": {
+        "login": "12345678",
+        "password": "ExamplePassword",
+        "challenge_hex": "000102030405060708090a0b0c0d0e0f",
+        "client_challenge_hex": "101112131415161718191a1b1c1d1e1f",
+        "nonce_u16": 4660,
+        "sequence": 2,
+        "otp": "123456"
+      },
+      "expected": {
+        "plaintext": {
+          "length": 53,
+          "hex": "34126adecffd4d9459a1de1621b4323809c3101112131415161718191a1b1c1d1e1f120e0000008d86473fb781ae9654d32a5f63b7",
+          "sha256": "37bdd09906f310da2c5b4f34780240fa01dcffa59f3b070d6032766a21eb80c5"
+        },
+        "frame": {
+          "length": 62,
+          "hex": "0135000000020002007539d2f4e3124fe83ad20414147b8ede160f9ee70d0aee0e9fcfcfd4efb1ee5b8227b4023a4636eeef6f48f193e0b75b4f2ff12ad5",
+          "sha256": "7bc074813f93bf1e44bf68a9b834c35a4282ff5dd44ee81af5fe93c5c3c06ede"
+        }
+      }
+    },
+    {
+      "id": "key7-01",
+      "operation": "session_key_derivation",
+      "inputs": {
+        "credential_digest_hex": "fb4823de3770686792d6b73aec3396f9",
+        "tag7_hex": "00"
+      },
+      "expected": {
+        "zero_padded_input_hex": "00000000000000000000000000000000",
+        "session_key_hex": "15643cc783ab813e27e8dd486ea7dfc5"
+      }
+    },
+    {
+      "id": "key7-15",
+      "operation": "session_key_derivation",
+      "inputs": {
+        "credential_digest_hex": "fb4823de3770686792d6b73aec3396f9",
+        "tag7_hex": "000102030405060708090a0b0c0d0e"
+      },
+      "expected": {
+        "zero_padded_input_hex": "000102030405060708090a0b0c0d0e00",
+        "session_key_hex": "0d717449bb3f0091e03fdb58250ea1bc"
+      }
+    },
+    {
+      "id": "key7-16",
+      "operation": "session_key_derivation",
+      "inputs": {
+        "credential_digest_hex": "fb4823de3770686792d6b73aec3396f9",
+        "tag7_hex": "000102030405060708090a0b0c0d0e0f"
+      },
+      "expected": {
+        "zero_padded_input_hex": "000102030405060708090a0b0c0d0e0f",
+        "session_key_hex": "bea156a3b9a90d931191a80112dc59d0"
+      }
+    },
+    {
+      "id": "key7-17",
+      "operation": "session_key_derivation",
+      "inputs": {
+        "credential_digest_hex": "fb4823de3770686792d6b73aec3396f9",
+        "tag7_hex": "000102030405060708090a0b0c0d0e0f10"
+      },
+      "expected": {
+        "zero_padded_input_hex": "000102030405060708090a0b0c0d0e0f10000000000000000000000000000000",
+        "session_key_hex": "bea156a3b9a90d931191a80112dc59d0b943539443021833e718193ef649a51b"
+      }
+    },
+    {
+      "id": "key7-32",
+      "operation": "session_key_derivation",
+      "inputs": {
+        "credential_digest_hex": "fb4823de3770686792d6b73aec3396f9",
+        "tag7_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      },
+      "expected": {
+        "zero_padded_input_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+        "session_key_hex": "bea156a3b9a90d931191a80112dc59d0f3a64483654585c669e0395d417e937d"
+      }
+    },
+    {
+      "id": "key27-01",
+      "operation": "trade_key_derivation",
+      "inputs": {
+        "credential_digest_hex": "fb4823de3770686792d6b73aec3396f9",
+        "tag27_hex": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f"
+      },
+      "expected": {
+        "decoded_tag27_hex": "db4966237eb1abaa91d7ca4f3b72ed081a4966235e91abaaf137ca4f1b52ed08",
+        "trade_key_hex": "ee47d3d1b093ebb78e800fd4cf6b817f50d498a2cb874b3d7e74451d18122050"
+      }
+    },
+    {
+      "id": "session-continuity-01",
+      "operation": "stateful_frames",
+      "inputs": {
+        "key_hex": "bea156a3b9a90d931191a80112dc59d0f3a64483654585c669e0395d417e937d",
+        "initial_position": 0,
+        "initial_previous_plain": 0
+      },
+      "expected": {
+        "segments": [
+          {
+            "command": 105,
+            "sequence": 65534,
+            "plaintext_hex": "0900000000",
+            "ciphertext_hex": "b7aa56a3b9",
+            "frame_hex": "6905000000feff0200b7aa56a3b9"
+          },
+          {
+            "command": 10,
+            "sequence": 65535,
+            "plaintext_hex": "",
+            "ciphertext_hex": "",
+            "frame_hex": "0a00000000ffff0200"
+          },
+          {
+            "command": 105,
+            "sequence": 0,
+            "plaintext_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+            "ciphertext_hex": "a90c961090a9001feb68d3f6bd5d9e7c4484c568e75864408db28cc3a06fdec8e80c961090e9001f2ba8d336fd5d9ebc4484c5a82758a4408df28cc3e0afdec8",
+            "frame_hex": "694000000000000200a90c961090a9001feb68d3f6bd5d9e7c4484c568e75864408db28cc3a06fdec8e80c961090e9001f2ba8d336fd5d9ebc4484c5a82758a4408df28cc3e0afdec8"
+          },
+          {
+            "command": 105,
+            "sequence": 1,
+            "plaintext_hex": "66696e616c",
+            "ciphertext_hex": "8e1a921e9e",
+            "frame_hex": "6905000000010002008e1a921e9e"
+          }
+        ],
+        "final_position": 74,
+        "final_previous_plain": 108
+      },
+      "notes": "Frames occur on one direction of one session. Do not reset between segments; the empty ping does not advance state."
+    },
+    {
+      "id": "lzo-literals-0000",
+      "operation": "outer_compression_literal_only",
+      "inputs": {
+        "plaintext_hex": ""
+      },
+      "expected": {
+        "envelope": {
+          "length": 11,
+          "hex": "0000000003000000110000",
+          "sha256": "c13a61ff68d7da2d087f56cd024fb473d2ea1864e6f6628bcd1ac138d3cdfdc6"
+        }
+      }
+    },
+    {
+      "id": "lzo-literals-0001",
+      "operation": "outer_compression_literal_only",
+      "inputs": {
+        "plaintext_hex": "03"
+      },
+      "expected": {
+        "envelope": {
+          "length": 13,
+          "hex": "01000000050000001203110000",
+          "sha256": "489e880a93ec421ce71a56271788b0440e99a036a6f32604a342d1c8b0fc0479"
+        }
+      }
+    },
+    {
+      "id": "lzo-literals-0003",
+      "operation": "outer_compression_literal_only",
+      "inputs": {
+        "plaintext_hex": "031425"
+      },
+      "expected": {
+        "envelope": {
+          "length": 15,
+          "hex": "030000000700000014031425110000",
+          "sha256": "75facf1d8d4f7efcdbfb9310a84851f68b62744af2da4261530f30f85ce65c31"
+        }
+      }
+    },
+    {
+      "id": "lzo-literals-0004",
+      "operation": "outer_compression_literal_only",
+      "inputs": {
+        "plaintext_hex": "03142536"
+      },
+      "expected": {
+        "envelope": {
+          "length": 16,
+          "hex": "04000000080000001503142536110000",
+          "sha256": "3c1c289119654ffabc677145e774fbe2405ee0d1c9679062233630a1e9f33edf"
+        }
+      }
+    },
+    {
+      "id": "lzo-literals-0238",
+      "operation": "outer_compression_literal_only",
+      "inputs": {
+        "plaintext_hex": "031425364758697a8b9cadbecfe0f102132435465768798a9bacbdcedff00112233445566778899aabbccddeef00112233445566778899aabbccddeeff102132435465768798a9bacbdcedfe0f2031425364758697a8b9cadbecfd0e1f30415263748596a7b8c9daebfc0d1e2f405162738495a6b7c8d9eafb0c1d2e3f5061728394a5b6c7d8e9fa0b1c2d3e4f60718293a4b5c6d7e8f90a1b2c3d4e5f708192a3b4c5d6e7f8091a2b3c4d5e6f8091a2b3c4d5e6f708192a3b4c5d6e7f90a1b2c3d4e5f60718293a4b5c6d7e8fa0b1c2d3e4f5061728394a5b6c7d8e9fb0c1d2e3f405162738495a6b7c8d9eafc0"
+      },
+      "expected": {
+        "envelope": {
+          "length": 250,
+          "hex": "ee000000f2000000ff031425364758697a8b9cadbecfe0f102132435465768798a9bacbdcedff00112233445566778899aabbccddeef00112233445566778899aabbccddeeff102132435465768798a9bacbdcedfe0f2031425364758697a8b9cadbecfd0e1f30415263748596a7b8c9daebfc0d1e2f405162738495a6b7c8d9eafb0c1d2e3f5061728394a5b6c7d8e9fa0b1c2d3e4f60718293a4b5c6d7e8f90a1b2c3d4e5f708192a3b4c5d6e7f8091a2b3c4d5e6f8091a2b3c4d5e6f708192a3b4c5d6e7f90a1b2c3d4e5f60718293a4b5c6d7e8fa0b1c2d3e4f5061728394a5b6c7d8e9fb0c1d2e3f405162738495a6b7c8d9eafc0110000",
+          "sha256": "feb4374a550181231602fa2348eea74c18026aa074b737d1ea3dac325ba754fa"
+        }
+      }
+    },
+    {
+      "id": "lzo-literals-0239",
+      "operation": "outer_compression_literal_only",
+      "inputs": {
+        "plaintext_hex": "031425364758697a8b9cadbecfe0f102132435465768798a9bacbdcedff00112233445566778899aabbccddeef00112233445566778899aabbccddeeff102132435465768798a9bacbdcedfe0f2031425364758697a8b9cadbecfd0e1f30415263748596a7b8c9daebfc0d1e2f405162738495a6b7c8d9eafb0c1d2e3f5061728394a5b6c7d8e9fa0b1c2d3e4f60718293a4b5c6d7e8f90a1b2c3d4e5f708192a3b4c5d6e7f8091a2b3c4d5e6f8091a2b3c4d5e6f708192a3b4c5d6e7f90a1b2c3d4e5f60718293a4b5c6d7e8fa0b1c2d3e4f5061728394a5b6c7d8e9fb0c1d2e3f405162738495a6b7c8d9eafc0d1"
+      },
+      "expected": {
+        "envelope": {
+          "length": 252,
+          "hex": "ef000000f400000000dd031425364758697a8b9cadbecfe0f102132435465768798a9bacbdcedff00112233445566778899aabbccddeef00112233445566778899aabbccddeeff102132435465768798a9bacbdcedfe0f2031425364758697a8b9cadbecfd0e1f30415263748596a7b8c9daebfc0d1e2f405162738495a6b7c8d9eafb0c1d2e3f5061728394a5b6c7d8e9fa0b1c2d3e4f60718293a4b5c6d7e8f90a1b2c3d4e5f708192a3b4c5d6e7f8091a2b3c4d5e6f8091a2b3c4d5e6f708192a3b4c5d6e7f90a1b2c3d4e5f60718293a4b5c6d7e8fa0b1c2d3e4f5061728394a5b6c7d8e9fb0c1d2e3f405162738495a6b7c8d9eafc0d1110000",
+          "sha256": "bd256247a9ba17d8dd5aeb7a43b2a56d2cf7cb7fa805dc1179010860385599f3"
+        }
+      }
+    },
+    {
+      "id": "lzo-literals-0273",
+      "operation": "outer_compression_literal_only",
+      "inputs": {
+        "plaintext_hex": "031425364758697a8b9cadbecfe0f102132435465768798a9bacbdcedff00112233445566778899aabbccddeef00112233445566778899aabbccddeeff102132435465768798a9bacbdcedfe0f2031425364758697a8b9cadbecfd0e1f30415263748596a7b8c9daebfc0d1e2f405162738495a6b7c8d9eafb0c1d2e3f5061728394a5b6c7d8e9fa0b1c2d3e4f60718293a4b5c6d7e8f90a1b2c3d4e5f708192a3b4c5d6e7f8091a2b3c4d5e6f8091a2b3c4d5e6f708192a3b4c5d6e7f90a1b2c3d4e5f60718293a4b5c6d7e8fa0b1c2d3e4f5061728394a5b6c7d8e9fb0c1d2e3f405162738495a6b7c8d9eafc0d1e2f30415263748596a7b8c9daebfd0e1f2031425364758697a8b9cadbecfe0f10213"
+      },
+      "expected": {
+        "envelope": {
+          "length": 286,
+          "hex": "110100001601000000ff031425364758697a8b9cadbecfe0f102132435465768798a9bacbdcedff00112233445566778899aabbccddeef00112233445566778899aabbccddeeff102132435465768798a9bacbdcedfe0f2031425364758697a8b9cadbecfd0e1f30415263748596a7b8c9daebfc0d1e2f405162738495a6b7c8d9eafb0c1d2e3f5061728394a5b6c7d8e9fa0b1c2d3e4f60718293a4b5c6d7e8f90a1b2c3d4e5f708192a3b4c5d6e7f8091a2b3c4d5e6f8091a2b3c4d5e6f708192a3b4c5d6e7f90a1b2c3d4e5f60718293a4b5c6d7e8fa0b1c2d3e4f5061728394a5b6c7d8e9fb0c1d2e3f405162738495a6b7c8d9eafc0d1e2f30415263748596a7b8c9daebfd0e1f2031425364758697a8b9cadbecfe0f10213110000",
+          "sha256": "9122a2aeb7910204934ed8c6cdeeab00e54630b0d603e5a91b2c4e2ccfaa497a"
+        }
+      }
+    },
+    {
+      "id": "lzo-literals-0274",
+      "operation": "outer_compression_literal_only",
+      "inputs": {
+        "plaintext_hex": "031425364758697a8b9cadbecfe0f102132435465768798a9bacbdcedff00112233445566778899aabbccddeef00112233445566778899aabbccddeeff102132435465768798a9bacbdcedfe0f2031425364758697a8b9cadbecfd0e1f30415263748596a7b8c9daebfc0d1e2f405162738495a6b7c8d9eafb0c1d2e3f5061728394a5b6c7d8e9fa0b1c2d3e4f60718293a4b5c6d7e8f90a1b2c3d4e5f708192a3b4c5d6e7f8091a2b3c4d5e6f8091a2b3c4d5e6f708192a3b4c5d6e7f90a1b2c3d4e5f60718293a4b5c6d7e8fa0b1c2d3e4f5061728394a5b6c7d8e9fb0c1d2e3f405162738495a6b7c8d9eafc0d1e2f30415263748596a7b8c9daebfd0e1f2031425364758697a8b9cadbecfe0f1021324"
+      },
+      "expected": {
+        "envelope": {
+          "length": 288,
+          "hex": "1201000018010000000001031425364758697a8b9cadbecfe0f102132435465768798a9bacbdcedff00112233445566778899aabbccddeef00112233445566778899aabbccddeeff102132435465768798a9bacbdcedfe0f2031425364758697a8b9cadbecfd0e1f30415263748596a7b8c9daebfc0d1e2f405162738495a6b7c8d9eafb0c1d2e3f5061728394a5b6c7d8e9fa0b1c2d3e4f60718293a4b5c6d7e8f90a1b2c3d4e5f708192a3b4c5d6e7f8091a2b3c4d5e6f8091a2b3c4d5e6f708192a3b4c5d6e7f90a1b2c3d4e5f60718293a4b5c6d7e8fa0b1c2d3e4f5061728394a5b6c7d8e9fb0c1d2e3f405162738495a6b7c8d9eafc0d1e2f30415263748596a7b8c9daebfd0e1f2031425364758697a8b9cadbecfe0f1021324110000",
+          "sha256": "ccc446acd95720095f435cc3735ef0a0498ec359b840fb6f27874c9896c276d9"
+        }
+      }
+    },
+    {
+      "id": "lzo-literals-0529",
+      "operation": "outer_compression_literal_only",
+      "inputs": {
+        "plaintext_hex": "031425364758697a8b9cadbecfe0f102132435465768798a9bacbdcedff00112233445566778899aabbccddeef00112233445566778899aabbccddeeff102132435465768798a9bacbdcedfe0f2031425364758697a8b9cadbecfd0e1f30415263748596a7b8c9daebfc0d1e2f405162738495a6b7c8d9eafb0c1d2e3f5061728394a5b6c7d8e9fa0b1c2d3e4f60718293a4b5c6d7e8f90a1b2c3d4e5f708192a3b4c5d6e7f8091a2b3c4d5e6f8091a2b3c4d5e6f708192a3b4c5d6e7f90a1b2c3d4e5f60718293a4b5c6d7e8fa0b1c2d3e4f5061728394a5b6c7d8e9fb0c1d2e3f405162738495a6b7c8d9eafc0d1e2f30415263748596a7b8c9daebfd0e1f2031425364758697a8b9cadbecfe0f102132435465768798a9bacbdcedff00112233445566778899aabbccddeef00112233445566778899aabbccddeeff102132435465768798a9bacbdcedfe0f2031425364758697a8b9cadbecfd0e1f30415263748596a7b8c9daebfc0d1e2f405162738495a6b7c8d9eafb0c1d2e3f5061728394a5b6c7d8e9fa0b1c2d3e4f60718293a4b5c6d7e8f90a1b2c3d4e5f708192a3b4c5d6e7f8091a2b3c4d5e6f8091a2b3c4d5e6f708192a3b4c5d6e7f90a1b2c3d4e5f60718293a4b5c6d7e8fa0b1c2d3e4f5061728394a5b6c7d8e9fb0c1d2e3f405162738495a6b7c8d9eafc0d1e2f30415263748596a7b8c9daebfd0e1f2031425364758697a8b9cadbecfe0f10213"
+      },
+      "expected": {
+        "envelope": {
+          "length": 544,
+          "hex": "110200001802000000000001031425364758697a8b9cadbecfe0f102132435465768798a9bacbdcedff00112233445566778899aabbccddeef00112233445566778899aabbccddeeff102132435465768798a9bacbdcedfe0f2031425364758697a8b9cadbecfd0e1f30415263748596a7b8c9daebfc0d1e2f405162738495a6b7c8d9eafb0c1d2e3f5061728394a5b6c7d8e9fa0b1c2d3e4f60718293a4b5c6d7e8f90a1b2c3d4e5f708192a3b4c5d6e7f8091a2b3c4d5e6f8091a2b3c4d5e6f708192a3b4c5d6e7f90a1b2c3d4e5f60718293a4b5c6d7e8fa0b1c2d3e4f5061728394a5b6c7d8e9fb0c1d2e3f405162738495a6b7c8d9eafc0d1e2f30415263748596a7b8c9daebfd0e1f2031425364758697a8b9cadbecfe0f102132435465768798a9bacbdcedff00112233445566778899aabbccddeef00112233445566778899aabbccddeeff102132435465768798a9bacbdcedfe0f2031425364758697a8b9cadbecfd0e1f30415263748596a7b8c9daebfc0d1e2f405162738495a6b7c8d9eafb0c1d2e3f5061728394a5b6c7d8e9fa0b1c2d3e4f60718293a4b5c6d7e8f90a1b2c3d4e5f708192a3b4c5d6e7f8091a2b3c4d5e6f8091a2b3c4d5e6f708192a3b4c5d6e7f90a1b2c3d4e5f60718293a4b5c6d7e8fa0b1c2d3e4f5061728394a5b6c7d8e9fb0c1d2e3f405162738495a6b7c8d9eafc0d1e2f30415263748596a7b8c9daebfd0e1f2031425364758697a8b9cadbecfe0f10213110000",
+          "sha256": "6e2186d8265d44fec4273673b98488188600342834e3cddf61c9eadaaa87e458"
+        }
+      }
+    },
+    {
+      "id": "lzo-literals-0838",
+      "operation": "outer_compression_literal_only",
+      "inputs": {
+        "plaintext_hex": "031425364758697a8b9cadbecfe0f102132435465768798a9bacbdcedff00112233445566778899aabbccddeef00112233445566778899aabbccddeeff102132435465768798a9bacbdcedfe0f2031425364758697a8b9cadbecfd0e1f30415263748596a7b8c9daebfc0d1e2f405162738495a6b7c8d9eafb0c1d2e3f5061728394a5b6c7d8e9fa0b1c2d3e4f60718293a4b5c6d7e8f90a1b2c3d4e5f708192a3b4c5d6e7f8091a2b3c4d5e6f8091a2b3c4d5e6f708192a3b4c5d6e7f90a1b2c3d4e5f60718293a4b5c6d7e8fa0b1c2d3e4f5061728394a5b6c7d8e9fb0c1d2e3f405162738495a6b7c8d9eafc0d1e2f30415263748596a7b8c9daebfd0e1f2031425364758697a8b9cadbecfe0f102132435465768798a9bacbdcedff00112233445566778899aabbccddeef00112233445566778899aabbccddeeff102132435465768798a9bacbdcedfe0f2031425364758697a8b9cadbecfd0e1f30415263748596a7b8c9daebfc0d1e2f405162738495a6b7c8d9eafb0c1d2e3f5061728394a5b6c7d8e9fa0b1c2d3e4f60718293a4b5c6d7e8f90a1b2c3d4e5f708192a3b4c5d6e7f8091a2b3c4d5e6f8091a2b3c4d5e6f708192a3b4c5d6e7f90a1b2c3d4e5f60718293a4b5c6d7e8fa0b1c2d3e4f5061728394a5b6c7d8e9fb0c1d2e3f405162738495a6b7c8d9eafc0d1e2f30415263748596a7b8c9daebfd0e1f2031425364758697a8b9cadbecfe0f102132435465768798a9bacbdcedff00112233445566778899aabbccddeef00112233445566778899aabbccddeeff102132435465768798a9bacbdcedfe0f2031425364758697a8b9cadbecfd0e1f30415263748596a7b8c9daebfc0d1e2f405162738495a6b7c8d9eafb0c1d2e3f5061728394a5b6c7d8e9fa0b1c2d3e4f60718293a4b5c6d7e8f90a1b2c3d4e5f708192a3b4c5d6e7f8091a2b3c4d5e6f8091a2b3c4d5e6f708192a3b4c5d6e7f90a1b2c3d4e5f60718293a4b5c6d7e8fa0b1c2d3e4f5061728394a5b6c7d8e9fb0c1d2e3f405162738495a6b7c8d9eafc0d1e2f30415263748596a7b8c9daebfd0e1f2031425364758697a8b9cadbecfe0f102132435465768798a9bacbdcedff00112233445566778899aabbccddeef00112233445566778899aabbccddeeff102132435465768798"
+      },
+      "expected": {
+        "envelope": {
+          "length": 854,
+          "hex": "460300004e0300000000000037031425364758697a8b9cadbecfe0f102132435465768798a9bacbdcedff00112233445566778899aabbccddeef00112233445566778899aabbccddeeff102132435465768798a9bacbdcedfe0f2031425364758697a8b9cadbecfd0e1f30415263748596a7b8c9daebfc0d1e2f405162738495a6b7c8d9eafb0c1d2e3f5061728394a5b6c7d8e9fa0b1c2d3e4f60718293a4b5c6d7e8f90a1b2c3d4e5f708192a3b4c5d6e7f8091a2b3c4d5e6f8091a2b3c4d5e6f708192a3b4c5d6e7f90a1b2c3d4e5f60718293a4b5c6d7e8fa0b1c2d3e4f5061728394a5b6c7d8e9fb0c1d2e3f405162738495a6b7c8d9eafc0d1e2f30415263748596a7b8c9daebfd0e1f2031425364758697a8b9cadbecfe0f102132435465768798a9bacbdcedff00112233445566778899aabbccddeef00112233445566778899aabbccddeeff102132435465768798a9bacbdcedfe0f2031425364758697a8b9cadbecfd0e1f30415263748596a7b8c9daebfc0d1e2f405162738495a6b7c8d9eafb0c1d2e3f5061728394a5b6c7d8e9fa0b1c2d3e4f60718293a4b5c6d7e8f90a1b2c3d4e5f708192a3b4c5d6e7f8091a2b3c4d5e6f8091a2b3c4d5e6f708192a3b4c5d6e7f90a1b2c3d4e5f60718293a4b5c6d7e8fa0b1c2d3e4f5061728394a5b6c7d8e9fb0c1d2e3f405162738495a6b7c8d9eafc0d1e2f30415263748596a7b8c9daebfd0e1f2031425364758697a8b9cadbecfe0f102132435465768798a9bacbdcedff00112233445566778899aabbccddeef00112233445566778899aabbccddeeff102132435465768798a9bacbdcedfe0f2031425364758697a8b9cadbecfd0e1f30415263748596a7b8c9daebfc0d1e2f405162738495a6b7c8d9eafb0c1d2e3f5061728394a5b6c7d8e9fa0b1c2d3e4f60718293a4b5c6d7e8f90a1b2c3d4e5f708192a3b4c5d6e7f8091a2b3c4d5e6f8091a2b3c4d5e6f708192a3b4c5d6e7f90a1b2c3d4e5f60718293a4b5c6d7e8fa0b1c2d3e4f5061728394a5b6c7d8e9fb0c1d2e3f405162738495a6b7c8d9eafc0d1e2f30415263748596a7b8c9daebfd0e1f2031425364758697a8b9cadbecfe0f102132435465768798a9bacbdcedff00112233445566778899aabbccddeef00112233445566778899aabbccddeeff102132435465768798110000",
+          "sha256": "7c1ff317a05c9cd07de16dcd0526de04c7362525108d2c8e9b9307ed61a9c854"
+        }
+      }
+    },
+    {
+      "id": "subscribe-quotes-0",
+      "operation": "subscription_body",
+      "inputs": {
+        "kind": "quotes",
+        "symbol_ids": []
+      },
+      "expected": {
+        "body": {
+          "length": 5,
+          "hex": "0900000000",
+          "sha256": "ceba8e226fc1ae3ed6e6fd58d778d4365556868b78faf5e5abbab0c04e0bd392"
+        }
+      }
+    },
+    {
+      "id": "subscribe-quotes-3",
+      "operation": "subscription_body",
+      "inputs": {
+        "kind": "quotes",
+        "symbol_ids": [
+          1,
+          1001,
+          2147483647
+        ]
+      },
+      "expected": {
+        "body": {
+          "length": 17,
+          "hex": "090300000001000000e9030000ffffff7f",
+          "sha256": "08810442b680109920e964ccbe7601ca205f3fd9d523bdd7b5f3adac8ff5f563"
+        }
+      }
+    },
+    {
+      "id": "subscribe-depth-0",
+      "operation": "subscription_body",
+      "inputs": {
+        "kind": "depth",
+        "symbol_ids": []
+      },
+      "expected": {
+        "body": {
+          "length": 4,
+          "hex": "00000000",
+          "sha256": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119"
+        }
+      }
+    },
+    {
+      "id": "subscribe-depth-3",
+      "operation": "subscription_body",
+      "inputs": {
+        "kind": "depth",
+        "symbol_ids": [
+          1,
+          1001,
+          2147483647
+        ]
+      },
+      "expected": {
+        "body": {
+          "length": 16,
+          "hex": "0300000001000000e9030000ffffff7f",
+          "sha256": "7c073e7a3ce3669d1382d73f3fd4185a28983a9a4f56e6f3a5efb98869dc2c30"
+        }
+      }
+    },
+    {
+      "id": "login-wrap-4199",
+      "operation": "login_value_wrapper_only",
+      "inputs": {
+        "server_build": 4199,
+        "client_build": 5500,
+        "login": "12345678",
+        "challenge_hex": "000102030405060708090a0b0c0d0e0f",
+        "assumed_F28_result": "18446744073709551614",
+        "assumed_F35_result": "81985529216486895"
+      },
+      "expected": {
+        "login_id": "18289557989361181670",
+        "extended_login_id": "219878749281440247",
+        "tag88_value_hex": "cc8a41fcfbfaf9f8",
+        "tag134_value_hex": "ddb8158a63402506"
+      },
+      "notes": "F28/F35 return values are artificial supplied inputs. This fixture does not define or implement either missing function."
+    },
+    {
+      "id": "login-wrap-4851",
+      "operation": "login_value_wrapper_only",
+      "inputs": {
+        "server_build": 4851,
+        "client_build": 5500,
+        "login": "12345678",
+        "challenge_hex": "000102030405060708090a0b0c0d0e0f",
+        "assumed_F28_result": "18446744073709551614",
+        "assumed_F35_result": "81985529216486895"
+      },
+      "expected": {
+        "login_id": "18289557989361181670",
+        "extended_login_id": "219878749281440247",
+        "tag88_value_hex": "cc8a41fcfbfaf9f8",
+        "tag134_value_hex": "ddb8158a63402506"
+      },
+      "notes": "F28/F35 return values are artificial supplied inputs. This fixture does not define or implement either missing function."
+    },
+    {
+      "id": "login-wrap-4852",
+      "operation": "login_value_wrapper_only",
+      "inputs": {
+        "server_build": 4852,
+        "client_build": 5500,
+        "login": "12345678",
+        "challenge_hex": "000102030405060708090a0b0c0d0e0f",
+        "assumed_F28_result": "18446744073709551614",
+        "assumed_F35_result": "81985529216486895"
+      },
+      "expected": {
+        "login_id": "18289557989361181670",
+        "extended_login_id": "218737920473294260",
+        "tag88_value_hex": "cc8a41fcfbfaf9f8",
+        "tag134_value_hex": "9e8c31e217762106"
+      },
+      "notes": "F28/F35 return values are artificial supplied inputs. This fixture does not define or implement either missing function."
+    },
+    {
+      "id": "login-wrap-5408",
+      "operation": "login_value_wrapper_only",
+      "inputs": {
+        "server_build": 5408,
+        "client_build": 5500,
+        "login": "12345678",
+        "challenge_hex": "000102030405060708090a0b0c0d0e0f",
+        "assumed_F28_result": "18446744073709551614",
+        "assumed_F35_result": "81985529216486895"
+      },
+      "expected": {
+        "login_id": "18289557989361181670",
+        "extended_login_id": "218737920473294260",
+        "tag88_value_hex": "cc8a41fcfbfaf9f8",
+        "tag134_value_hex": "9e8c31e217762106"
+      },
+      "notes": "F28/F35 return values are artificial supplied inputs. This fixture does not define or implement either missing function."
+    },
+    {
+      "id": "login-wrap-5409",
+      "operation": "login_value_wrapper_only",
+      "inputs": {
+        "server_build": 5409,
+        "client_build": 5500,
+        "login": "12345678",
+        "challenge_hex": "000102030405060708090a0b0c0d0e0f",
+        "assumed_F28_result": "18446744073709551614",
+        "assumed_F35_result": "81985529216486895"
+      },
+      "expected": {
+        "login_id": "18289557989361181671",
+        "extended_login_id": "218737920473294261",
+        "tag88_value_hex": "cd8a41fcfbfaf9f8",
+        "tag134_value_hex": "9f8c31e217762106"
+      },
+      "notes": "F28/F35 return values are artificial supplied inputs. This fixture does not define or implement either missing function."
+    },
+    {
+      "id": "login-wrap-5500",
+      "operation": "login_value_wrapper_only",
+      "inputs": {
+        "server_build": 5500,
+        "client_build": 5500,
+        "login": "12345678",
+        "challenge_hex": "000102030405060708090a0b0c0d0e0f",
+        "assumed_F28_result": "18446744073709551614",
+        "assumed_F35_result": "81985529216486895"
+      },
+      "expected": {
+        "login_id": "157186084348369946",
+        "extended_login_id": "218737920473294216",
+        "tag88_value_hex": "3075be0304050607",
+        "tag134_value_hex": "a28c31e217762106"
+      },
+      "notes": "F28/F35 return values are artificial supplied inputs. This fixture does not define or implement either missing function."
+    },
+    {
+      "id": "sync-4200-4200",
+      "operation": "synchronization_request",
+      "inputs": {
+        "login": "12345678",
+        "client_build": 4200,
+        "server_build": 4200,
+        "unix_seconds": "1700000000",
+        "login_id": "1234605616436508552",
+        "extended_login_id": "9833440827789222417",
+        "environment_text": null
+      },
+      "expected": {
+        "tag_order": [
+          34,
+          39,
+          108,
+          139,
+          22,
+          24,
+          7,
+          40,
+          103,
+          17,
+          88
+        ],
+        "tag_lengths": [
+          8,
+          4,
+          8,
+          16,
+          9,
+          8,
+          44,
+          28,
+          12,
+          16,
+          8
+        ],
+        "body": {
+          "length": 216,
+          "hex": "2208000000ffffffffffffffff2704000000000000006c08000000307b21e0422eccd48b100000004e61bc000000000000000000000000001609000000000000000000000000180800000000f1536500000000072c000000000000000000000000000000d41d8cd98f00b204e9800998ecf8427ed41d8cd98f00b204e9800998ecf8427e281c000000000000000000000000000000d41d8cd98f00b204e9800998ecf8427e670c0000000000000000000000000000001110000000f6eb0645cd1274f152d99793cbd8dad85808000000a21ee067a9590a14",
+          "sha256": "8b83ee607caf82b0e1984e80ad946a5881ef463ab4aefd189f89410ba98de950"
+        }
+      },
+      "notes": "Synthetic IDs are explicit inputs. This is a serialization fixture, not a successful login transcript."
+    },
+    {
+      "id": "sync-5500-5500",
+      "operation": "synchronization_request",
+      "inputs": {
+        "login": "12345678",
+        "client_build": 5500,
+        "server_build": 5500,
+        "unix_seconds": "1700000000",
+        "login_id": "1234605616436508552",
+        "extended_login_id": "9833440827789222417",
+        "environment_text": "file=terminal64.exe\tversion=5500\tcert_company=MetaQuotes Ltd\tcert_issuer=DigiCert Trusted G4 Code Signing RSA4096 SHA384 2021 CA1\tcert_serial=04390a4c5f8906a1d7052c1768d45047\tos_ver=Windows 11 build 22CF7\tos_id=4454-31D2-88E5-AAOEM\tcomputer=NIMO-DESKTOP\t"
+      },
+      "expected": {
+        "tag_order": [
+          34,
+          39,
+          108,
+          139,
+          22,
+          24,
+          132,
+          127,
+          7,
+          40,
+          103,
+          17,
+          88,
+          134
+        ],
+        "tag_lengths": [
+          8,
+          4,
+          8,
+          16,
+          9,
+          8,
+          0,
+          510,
+          44,
+          28,
+          12,
+          16,
+          8,
+          8
+        ],
+        "body": {
+          "length": 749,
+          "hex": "2208000000ffffffffffffffff2704000000000000006c08000000307b21e0422eccd48b100000004e61bc000000000000000000000000001609000000000000000000000000180800000000f153650000000084000000007ffe010000660069006c0065003d007400650072006d0069006e0061006c00360034002e006500780065000900760065007200730069006f006e003d003500350030003000090063006500720074005f0063006f006d00700061006e0079003d004d00650074006100510075006f0074006500730020004c0074006400090063006500720074005f006900730073007500650072003d004400690067006900430065007200740020005400720075007300740065006400200047003400200043006f006400650020005300690067006e0069006e006700200052005300410034003000390036002000530048004100330038003400200032003000320031002000430041003100090063006500720074005f00730065007200690061006c003d003000340033003900300061003400630035006600380039003000360061003100640037003000350032006300310037003600380064003400350030003400370009006f0073005f007600650072003d00570069006e0064006f007700730020003100310020006200750069006c00640020003200320043004600370009006f0073005f00690064003d0034003400350034002d0033003100440032002d0038003800450035002d00410041004f0045004d00090063006f006d00700075007400650072003d004e0049004d004f002d004400450053004b0054004f00500009000000072c000000000000000000000000000000d41d8cd98f00b204e9800998ecf8427ed41d8cd98f00b204e9800998ecf8427e281c000000000000000000000000000000d41d8cd98f00b204e9800998ecf8427e670c0000000000000000000000000000001110000000f6eb0645cd1274f152d99793cbd8dad85808000000a21ee067a9590a1486080000003b4bb576b80c5f8d",
+          "sha256": "b68d102dcb732220747981dcace9905a0620f78bee34adfe5be6fbdf194f4d17"
+        }
+      },
+      "notes": "Synthetic IDs are explicit inputs. This is a serialization fixture, not a successful login transcript."
+    },
+    {
+      "id": "trade-01",
+      "operation": "signed_trade_full_pipeline",
+      "inputs": {
+        "fields": {
+          "request_id": 7,
+          "trade_type": 3,
+          "login": 12345678,
+          "symbol": "EURUSD",
+          "volume_units": 10000000,
+          "digits": 5,
+          "order_type": 0,
+          "fill_policy": 1,
+          "expiration_type": 0,
+          "price": 1.23456,
+          "stop_loss": 1.23,
+          "take_profit": 1.24,
+          "deviation": 20,
+          "expert_id": 42,
+          "comment": "fixture"
+        },
+        "unspecified_fields": "all zero bytes",
+        "trade_key_hex": "ee47d3d1b093ebb78e800fd4cf6b817f50d498a2cb874b3d7e74451d18122050",
+        "session_key_hex": "bea156a3b9a90d931191a80112dc59d0f3a64483654585c669e0395d417e937d",
+        "initial_session_position": 0,
+        "initial_previous_plain": 0,
+        "sequence": 9
+      },
+      "expected": {
+        "record": {
+          "length": 800,
+          "hex": "0700000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000030000004e61bc00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000045005500520055005300440000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000809698000000000000000000000000000500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000000000000038328ffcc1c0f33f0000000000000000ae47e17a14aef33fd7a3703d0ad7f33f140000000000000000000000000000000000000000000000000000000000000000000000000000002a00000000000000660069007800740075007200650000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+          "sha256": "beb3519f2b8d6309f76aee406cd65741934827e86bc7de837a75c82f456021cc"
+        },
+        "hmac_hex": "5f9048abeec23256141981036994ece2d1fa8505db5d1a61ce9300a29f6d121b",
+        "plaintext_body": {
+          "length": 838,
+          "hex": "000700000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000030000004e61bc00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000045005500520055005300440000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000809698000000000000000000000000000500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000000000000038328ffcc1c0f33f0000000000000000ae47e17a14aef33fd7a3703d0ad7f33f140000000000000000000000000000000000000000000000000000000000000000000000000000002a0000000000000066006900780074007500720065000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000055200000005f9048abeec23256141981036994ece2d1fa8505db5d1a61ce9300a29f6d121b",
+          "sha256": "01fcfa01299db813a25c34ede96de196f676c134395d0efd9071e1dc30aee39b"
+        },
+        "compression_envelope": {
+          "length": 854,
+          "hex": "460300004e0300000000000037000700000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000030000004e61bc00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000045005500520055005300440000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000809698000000000000000000000000000500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000000000000038328ffcc1c0f33f0000000000000000ae47e17a14aef33fd7a3703d0ad7f33f140000000000000000000000000000000000000000000000000000000000000000000000000000002a0000000000000066006900780074007500720065000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000055200000005f9048abeec23256141981036994ece2d1fa8505db5d1a61ce9300a29f6d121b110000",
+          "sha256": "8ea9027a899ca8229fd1801cf52e1ab2e2ab38f62ccb5e2f527dd481a8e2f91f"
+        },
+        "frame": {
+          "length": 863,
+          "hex": "6c5603000009000300f8e459a3f7f410931191a80125135ed7f3a64483654585c669e0395d417e937dbea156a3b9a90d931191a80112dc59d0f3a64483654585c669e0395d417e937dbea156a3b9a90d931191a80112dc59d0f3a647866545cb75769c395d417e937dbea156a3b9a90d931191a80112dc59d0f3a64483654585c669e0395d417e937dbea156a3b9a90d931191a80112dc59d0f3a64483654585c669e0395d417e937dbea156a3b9a90d931191a80112dc59d0f3a64483654585c669e0395d417e937dbea156a3b9a90d931191a80112dc59d0f3a64483654585c669e0395d417e937dbea156a3b9a90d931191a80112dc59d0f3a64483654585c669e0395d417e937dbea156a3b9a90d931191a80112dc59d0f3a64483654585c669e0395d417e937dbea156a3b9a90d931191a80112dc1c15a6fb16d5309ad6192d24395d417e937dbea156a3b9a90d931191a80112dc59d0f3a64483654585c669e0395d417e937dbea156a3b9a90d931191a80112dcd9c6113e4483654585c669e0395d417e9682bea156a3b9a90d931191a80112dc59d0f3a64483654585c669e0395d417e937dbea156a3b9a90d931191a80112dc59d0f3a64483654585c669e0395d417e937dbea156a3b9a90d931191a80112dc59d0f3a64483654585c669e0395d417e937dbea156a3b9a90d931191a80112dc59d0f3a64483654585c669e0385e417e937dbea156a3b9a90d931191a80112dc59d0f3a64483654585c669e0395d417eab877fcc93a48aa34c931191a80112dcf739dbfdaa39e007133e7c6d7cb0eb4ec691bea156a3b9a90d931191a80112dc59d0f3a64483654585c669e0395d417e937dbea156a3b9a927bd1191a80112dc3f369a0f3cfb11b9f03b1b525cc2417e937dbea156a3b9a90d931191a80112dc59d0f3a64483654585c669e0395d417e937dbea156a3b9a90d931191a80112dc59d0f3a64483654585c669e0395d417e937dbea156a3b9a90d931191a80112dc59d0f3a64483654585c669e0395d417e937dbea156a3b9a90d931191a80112dc59d0f3a64483654585c669e0395d417e937dbea156a3b9a90d931191a80112dc59d0f3a64483654585c669e0395d417e937dbea156a3b9a90d931191a80112dc0c0513a644dc549d669f95903da74c1617e9b3d9a05470269743b1f4a3ac736ffbedff014d8f7645",
+          "sha256": "b4ac02245089a41be84d1eaeaf49d3903ad26a15029fd16eb0ab4b6e02748c21"
+        }
+      },
+      "notes": "Example market-buy serialization only; no assertion of server permission or acceptance."
+    },
+    {
+      "id": "trade-result-01",
+      "operation": "command55_subtype35",
+      "inputs": {
+        "count": 1,
+        "request_id": 7,
+        "status": 10009,
+        "ticket": "800001",
+        "position_id": "900001"
+      },
+      "expected": {
+        "body": {
+          "length": 1217,
+          "hex": "23010000007b0000000000000001350c0000000000450055005200550053004400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000700000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000030000004e61bc00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000045005500520055005300440000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000809698000000000000000000000000000500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000000000000038328ffcc1c0f33f0000000000000000ae47e17a14aef33fd7a3703d0ad7f33f140000000000000000000000000000000000000000000000000000000000000000000000000000002a0000000000000066006900780074007500720065000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000019270000a1bb0d000000000001350c0000000000809698000000000038328ffcc1c0f33f0000000000000000000000000000000000000000000000000000000000000000730079006e00740068006500740069006300200065007800650063007500740065006400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+          "sha256": "4e60589ac46174f6af26fdd14fec95afa823b26911f7689aca833334a65390d4"
+        },
+        "stride": 1212,
+        "transaction_offset_in_body": 5,
+        "request_offset_in_body": 157,
+        "result_offset_in_body": 957
+      }
+    },
+    {
+      "id": "history-request-32",
+      "operation": "command101_request",
+      "inputs": {
+        "subtype": 32,
+        "from_unix_seconds": "1700000000",
+        "to_unix_seconds": "1700086400",
+        "cache_count": 0
+      },
+      "expected": {
+        "body": {
+          "length": 21,
+          "hex": "2000f1536500000000804255650000000000000000",
+          "sha256": "6def3bfe2f6bad56148f6af2b5ba409dc1299e2c7a208cd16cf3dca7e383b255"
+        }
+      }
+    },
+    {
+      "id": "history-request-33",
+      "operation": "command101_request",
+      "inputs": {
+        "subtype": 33,
+        "from_unix_seconds": "1700000000",
+        "to_unix_seconds": "1700086400",
+        "cache_count": 0
+      },
+      "expected": {
+        "body": {
+          "length": 21,
+          "hex": "2100f1536500000000804255650000000000000000",
+          "sha256": "bf42cfa542ea78a08e847eaff29b596502dc08b39950475b0225899c14bf09e4"
+        }
+      }
+    },
+    {
+      "id": "packed-unsigned",
+      "operation": "packed_integer_sequence",
+      "inputs": {
+        "prefix_width": 2,
+        "target_bits": 64,
+        "signed_explicit": false,
+        "values": [
+          "0",
+          "1",
+          "3",
+          "4",
+          "15",
+          "16",
+          "63",
+          "64",
+          "255",
+          "256",
+          "65535",
+          "65536",
+          "2147483647",
+          "4294967295",
+          "9223372036854775807",
+          "18446744073709551615"
+        ]
+      },
+      "expected": {
+        "bytes": {
+          "length": 49,
+          "hex": "544bfe40f31fd0fd2f40efffff0f0040fff7fffffff77fffffffffffffefffffffffffffffdffffffbffffffffffffff0f",
+          "sha256": "47bde96ea54191337c88019a5f6bc77aefe494c5a96b6c10b0d34d52d5fe575e"
+        },
+        "bit_count": 388
+      }
+    },
+    {
+      "id": "packed-signed",
+      "operation": "packed_integer_sequence",
+      "inputs": {
+        "prefix_width": 2,
+        "target_bits": 64,
+        "signed_explicit": true,
+        "values": [
+          "0",
+          "1",
+          "-1",
+          "3",
+          "-3",
+          "2147483647",
+          "-2147483648",
+          "9223372036854775807",
+          "-9223372036854775808"
+        ]
+      },
+      "expected": {
+        "bytes": {
+          "length": 36,
+          "hex": "482df7fff3fffffff77f01000000ffff5fffffffffffffff7fffff6f0000000000000040",
+          "sha256": "f5e085c103bac0e038f2783278dbb05ab2e474abf7c07369c858f2d6f539b9a5"
+        },
+        "bit_count": 287
+      }
+    },
+    {
+      "id": "snapshot-command51-01",
+      "operation": "command51_single_record",
+      "inputs": {
+        "symbol_id": 1001,
+        "presence_mask": "73",
+        "time_seconds": "1700000000",
+        "optional_values_in_wire_order": [
+          "123450",
+          "123460",
+          "123455"
+        ]
+      },
+      "expected": {
+        "body": {
+          "length": 19,
+          "hex": "9bfe25fd1f40fc54d98f8e783f44e2fdfc8807",
+          "sha256": "5c0ff07b6ec9c71e9be682c1e5eba397b0907aed08484919e6d772923c78316f"
+        },
+        "record_bits_before_padding": 148,
+        "record_bits_after_strict_padding": 152
+      },
+      "previous_id": "live-tick-01",
+      "erratum": "The bytes encode command 51, not command 50; corrected after dispatch/parser reinspection."
+    },
+    {
+      "id": "snapshot-command51-strict-aligned",
+      "operation": "command51_single_record",
+      "inputs": {
+        "symbol_id": 1,
+        "presence_mask": "0",
+        "time_seconds": "0",
+        "optional_values_in_wire_order": []
+      },
+      "expected": {
+        "body": {
+          "length": 2,
+          "hex": "0500",
+          "sha256": "2921a11f25dadaa24aa79a548e4e81508c2e5e56af2d833d65e2bcce448ce2f5"
+        },
+        "record_bits_before_padding": 8,
+        "record_bits_after_strict_padding": 16
+      },
+      "previous_id": "live-tick-strict-aligned",
+      "erratum": "The bytes encode command 51, not command 50; corrected after dispatch/parser reinspection."
+    },
+    {
+      "id": "depth-01",
+      "operation": "command52_single_record",
+      "inputs": {
+        "symbol_id": 7,
+        "time_value": "1700000000",
+        "flags": "0",
+        "entries": [
+          {
+            "mask": "0",
+            "type": 1,
+            "price_integer": "123460",
+            "volume_delta": "10",
+            "auxiliary": "0"
+          },
+          {
+            "mask": "0",
+            "type": 2,
+            "price_integer": "123450",
+            "volume_delta": "-3",
+            "auxiliary": "0"
+          }
+        ]
+      },
+      "expected": {
+        "body": {
+          "length": 17,
+          "hex": "deff01c44f9591d40f917852c81f1df13a",
+          "sha256": "9413fa0a0940186935402b9f3e748a971c201a479492fb7ede64c1e2d2ae8848"
+        },
+        "bit_count": 136
+      }
+    },
+    {
+      "id": "bar-anchor-01",
+      "operation": "command102_packed_bar_container",
+      "inputs": {
+        "prefix_width": 2,
+        "digits": 5,
+        "bar_count": 1,
+        "tag": 0,
+        "flags": "3",
+        "time_seconds": "1700000000",
+        "open_integer": "123456",
+        "high_delta": "10",
+        "low_delta": "5",
+        "close_delta": "2",
+        "tick_volume": "1000",
+        "spread": "3",
+        "real_volume": "100000000"
+      },
+      "expected": {
+        "packed_data": {
+          "length": 19,
+          "hex": "f4ff01c44f95fd00124fb5e2a29fff0508af2f",
+          "sha256": "b6b008df91be821f421af522dd7d14f5edabd53ce43364374593416014aa8d37"
+        },
+        "bit_count": 151,
+        "container": {
+          "length": 148,
+          "hex": "810045005500520055005300440000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000130000000000000097000000010000000200f15365050000000100000000000000000000000000000000000000000000000000000000000000f4ff01c44f95fd00124fb5e2a29fff0508af2f",
+          "sha256": "91ffe94cc0c5e9154a8a9836654f10692cb7bc487183c23a7a572308de963b1c"
+        },
+        "prices_decimal": {
+          "open": "1.23456",
+          "high": "1.23466",
+          "low": "1.23451",
+          "close": "1.23458"
+        }
+      }
+    },
+    {
+      "id": "tick-history-request-01",
+      "operation": "command105_subtype14_request",
+      "inputs": {
+        "symbol": "EURUSD",
+        "year": 2023,
+        "month": 11,
+        "day": 14,
+        "request_parameter": 0,
+        "cache_count": 0
+      },
+      "expected": {
+        "date_token": 27502,
+        "descriptor": {
+          "length": 499,
+          "hex": "f301450055005200550053004400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000006e6b6e6b000000000000000000000000000000000200000000050006000100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+          "sha256": "bf5b8b501fcdfd2c94dcdeacb7bc6e324e8f202c87018562869e87dd8dbe447d"
+        },
+        "body": {
+          "length": 574,
+          "hex": "0e450055005200550053004400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000006e6b0000000000000000f301450055005200550053004400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000006e6b6e6b000000000000000000000000000000000200000000050006000100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+          "sha256": "89bd54e0af3b8add0e5d6dd4568e2ddd955440098a12aba396d27876f7fe00ad"
+        }
+      }
+    },
+    {
+      "id": "tick-history-plain-01",
+      "operation": "plain_tick_container",
+      "inputs": {
+        "symbol": "EURUSD",
+        "date_token": 27502,
+        "prefix_width": 2,
+        "digits": 5,
+        "tag": 5,
+        "time_ms": "1700000000123",
+        "bid_integer": "123450",
+        "ask_integer": "123460",
+        "last_integer": "123455",
+        "whole_volume": "2",
+        "fractional_volume": "123",
+        "bank_id": 7
+      },
+      "expected": {
+        "container": {
+          "length": 137,
+          "hex": "7300450055005200550053004400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000006e6b00001600000000000000ac000000010000000200f15365050000000100000000000000000000000000000000000000d6ffcf1e5af9f3623f74c4fb4124de8f1ff1120fb707",
+          "sha256": "30c7c33f80df5c53f2be2d7c089fd5721aa76d5990af91f4ff1249cca92f8e3c"
+        },
+        "packed_data": {
+          "length": 22,
+          "hex": "d6ffcf1e5af9f3623f74c4fb4124de8f1ff1120fb707",
+          "sha256": "630c252cf960387de9a4fe9108d9f8a1bb22f1db1cf8e77eff599b9fd27ee2c1"
+        },
+        "bit_count": 172,
+        "volume_units": "200000123"
+      }
+    },
+    {
+      "id": "history-inner-zlib",
+      "operation": "history_block_inflation",
+      "inputs": {
+        "format": "zlib",
+        "compressed_hex": "789c2baecc2bc9482dc94c56c8cccb4b2d52c8c82c2ec92faa5448cac94fce6628a6992c00f53e2dd1"
+      },
+      "expected": {
+        "plaintext": {
+          "length": 120,
+          "hex": "73796e74686574696320696e6e657220686973746f727920626c6f636b0073796e74686574696320696e6e657220686973746f727920626c6f636b0073796e74686574696320696e6e657220686973746f727920626c6f636b0073796e74686574696320696e6e657220686973746f727920626c6f636b00",
+          "sha256": "51d71e9f5d505dd5d2299cd916867045e86efd0bfac844e16b62081808d32ead"
+        }
+      },
+      "notes": "Inner-layer fixture only. This is not an outer LZO frame and not a complete tick predictor block."
+    },
+    {
+      "id": "history-inner-raw-deflate",
+      "operation": "history_block_inflation",
+      "inputs": {
+        "format": "raw_deflate",
+        "compressed_hex": "2baecc2bc9482dc94c56c8cccb4b2d52c8c82c2ec92faa5448cac94fce6628a6992c00"
+      },
+      "expected": {
+        "plaintext": {
+          "length": 120,
+          "hex": "73796e74686574696320696e6e657220686973746f727920626c6f636b0073796e74686574696320696e6e657220686973746f727920626c6f636b0073796e74686574696320696e6e657220686973746f727920626c6f636b0073796e74686574696320696e6e657220686973746f727920626c6f636b00",
+          "sha256": "51d71e9f5d505dd5d2299cd916867045e86efd0bfac844e16b62081808d32ead"
+        }
+      },
+      "notes": "Inner-layer fixture only. This is not an outer LZO frame and not a complete tick predictor block."
+    },
+    {
+      "id": "password-change-01",
+      "operation": "command107_subtype12",
+      "inputs": {
+        "login": "12345678",
+        "new_password": "ExampleNewPass",
+        "mode": 0
+      },
+      "expected": {
+        "body": {
+          "length": 18,
+          "hex": "0c00058201a75078d0ec3bf649cbd29b62c4",
+          "sha256": "11d0da3e32d2dd58a004df2b784607564679de5021b238078f52627233d81462"
+        }
+      },
+      "notes": "Serialization fixture only; no password change has been sent."
+    },
+    {
+      "id": "negative-frame-length",
+      "operation": "reject_frame_header",
+      "inputs": {
+        "frame_hex": "32ffffffff01000200",
+        "configured_max_payload": 16777216
+      },
+      "expected": {
+        "outcome": "reject"
+      },
+      "notes": "The configured maximum is test policy, not a universal wire limit."
+    },
+    {
+      "id": "oversize-test-policy",
+      "operation": "reject_frame_header",
+      "inputs": {
+        "frame_hex": "320000100101000200",
+        "configured_max_payload": 16777216
+      },
+      "expected": {
+        "outcome": "reject"
+      },
+      "notes": "The configured maximum is test policy, not a universal wire limit."
+    }
+  ]
+}

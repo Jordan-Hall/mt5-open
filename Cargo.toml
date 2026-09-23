@@ -1,0 +1,8 @@
+[workspace]
+resolver = "2"
+members = ["mt5-webterm", "mt5-native", "mt5-session"]
+
+[profile.release]
+strip = true
+lto = "thin"
+codegen-units = 1

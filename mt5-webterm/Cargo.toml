@@ -1,0 +1,30 @@
+[package]
+name = "mt5_webterm"
+version = "0.1.0"
+edition = "2024"
+description = "Native MetaQuotes web-terminal WebSocket client (no terminal64, no loginid)"
+
+[dependencies]
+aes = "0.8"
+cbc = { version = "0.1", features = ["alloc", "block-padding"] }
+cipher = { version = "0.4", features = ["block-padding"] }
+flate2 = "1"
+futures-util = "0.3"
+md-5 = "0.10"
+rand = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net"] }
+# rustls only — native-tls/openssl-sys does not cross-compile to Android.
+tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+url = "2"
+
+[[bin]]
+name = "webterm-probe"
+path = "src/bin/webterm-probe.rs"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

@@ -1,0 +1,17 @@
+[package]
+name = "mt5_native"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+aes = "0.8"
+cbc = { version = "0.1", features = ["alloc", "block-padding"] }
+sha2 = "0.10"
+hmac = "0.12"
+flate2 = "1"
+
+[dev-dependencies]
+serde_json = "1"
+
+[features]
+live = []
