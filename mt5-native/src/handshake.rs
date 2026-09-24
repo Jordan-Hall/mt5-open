@@ -5,7 +5,7 @@
 //! machine: it produces the frames a client would send and consumes the
 //! plaintext a server would return, deriving and holding the session and trade
 //! keys along the way. It performs no I/O — every method is bytes in / bytes
-//! out — and the crate remains DISABLED by policy.
+//! out — and never opens a network connection.
 //!
 //! ```text
 //! Init ──hello()──▶ HelloSent ──on_challenge()──▶ ChallengeReceived
@@ -198,6 +198,15 @@ impl Handshake {
         self.server_challenge.as_ref().ok_or_else(|| ProtocolError::new("no server challenge stored"))
     }
 
+    /// Original challenge for a caller-supplied local additional-login resolver.
+    /// This is sensitive protocol material and must not be logged.
+    pub fn authentication_challenge(&self) -> Result<&[u8; 16]> {
+        if !matches!(self.phase, Phase::SessionKeysReady | Phase::CertificateRequired | Phase::SyncSent) {
+            return Err(ProtocolError::new("authentication has not established session keys"));
+        }
+        self.server_challenge.as_ref().ok_or_else(|| ProtocolError::new("no server challenge stored"))
+    }
+
     /// The environment metadata this client would present in tag 127.
     pub fn generated_environment(&self) -> String {
         environment_metadata(&self.device_id, self.client_build as u32)
@@ -288,6 +297,7 @@ mod tests {
         assert_eq!(encode(h.session_key().unwrap()), "15643cc783ab813e27e8dd486ea7dfc5");
         assert_eq!(encode(h.trade_key().unwrap()), "ee47d3d1b093ebb78e800fd4cf6b817f50d498a2cb874b3d7e74451d18122050");
         assert_eq!(h.server_build(), Some(4199));
+        assert_eq!(h.authentication_challenge().unwrap(), &challenge);
 
         // Sync frame is command 12 and its body deciphers to the sync request.
         let lv = login_value_wrapper(12345678, 5500, 4199, &challenge, 18446744073709551614, 81985529216486895);
@@ -305,6 +315,7 @@ mod tests {
     #[test]
     fn steps_must_run_in_order() {
         let mut h = Handshake::new(12345678, "ExamplePassword", 5500);
+        assert!(h.authentication_challenge().is_err());
         // Cannot authenticate before a challenge.
         let client = [0u8; 16];
         assert!(h.auth(&client, 0, None, 2).is_err());

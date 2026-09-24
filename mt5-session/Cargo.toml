@@ -11,14 +11,13 @@ edition = "2024"
 
 [dependencies]
 mt5_native = { path = "../mt5-native" }
-# The loginid service is an HTTPS POST, so a TLS-capable client is needed for
-# it -- but only under `live`, so the default build stays networking-free.
-ureq = { version = "2", optional = true }
+# OS-backed nonce generation is used only by the opt-in socket transport.
+rand = { version = "0.8", optional = true }
 
 [features]
 # Nothing here connects to anything unless this is on, and the codec's own
 # tripwire has to be satisfied as well.
-live = ["mt5_native/live", "dep:ureq"]
+live = ["mt5_native/live", "dep:rand"]
 
 # The probe opens a socket, so it only builds under `live`; without the feature
 # the default build skips it instead of failing to resolve Session.

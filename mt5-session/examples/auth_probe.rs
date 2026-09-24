@@ -11,7 +11,8 @@
 //! how that connection gets evaluated.
 //!
 //! Credentials come from the environment so they stay out of the shell history
-//! and out of this file. Nothing they contain is ever printed:
+//! and out of this file. The account number and endpoint are printed; passwords
+//! and cryptographic material are not:
 //!
 //!   MT5_ADDRESS   host:port of the access server
 //!   MT5_LOGIN     account number
@@ -23,8 +24,7 @@
 
 use std::time::Instant;
 
-use mt5_native::login::LoginValues;
-use mt5_session::{LoginIdService, Session};
+use mt5_session::Session;
 
 fn var(name: &str) -> Result<String, String> {
     std::env::var(name).map_err(|_| format!("{name} is not set"))
@@ -103,62 +103,13 @@ fn probe() -> Result<(), String> {
         };
         println!("  VERDICT: this server sent {which}.");
         println!("  Synchronization needs values derived from it, and that derivation is an");
-        println!("  external calculation this codec does not contain.");
+        println!("  additional calculation this codec does not contain.");
     } else {
         println!("  VERDICT: this server sent neither tag 28 nor tag 35.");
-        println!("  The external calculation may not be needed here.");
+        println!("  No conclusion about synchronization requirements can be drawn from that alone.");
     }
 
-    // If a loginid service is configured, do exactly what the terminal does:
-    // POST the tag material, get the two integers, synchronize with real login
-    // values, and read account state. The base URL and guid are the terminal's
-    // configuration inputs, supplied here rather than discovered.
-    //
-    //   MT5_LOGINID_BASE   e.g. https://host[:port]
-    //   MT5_LOGINID_GUID   the configured service key
-    //
-    // Still no order: the command-12 reply is account state, which is a read.
-    match (std::env::var("MT5_LOGINID_BASE"), std::env::var("MT5_LOGINID_GUID")) {
-        (Ok(base), Ok(guid)) => {
-            println!("
-  --- command-12 synchronization via the loginid service ---");
-            println!("  loginid base {base}");
-            let service = LoginIdService::new(base, guid);
-            match session.synchronize_via_service(&service) {
-                Ok((status, stream)) => {
-                    println!("  reply status {status}, {} bytes decoded", stream.len());
-                    if status == 0 {
-                        println!("
-  READY. Reading account state...");
-                        match session.read_account_state() {
-                            Ok(acct) => {
-                                println!("  login {}   balance {:.2}   credit {:.2}   blocked {:.2}   leverage 1:{}",
-                                    acct.login, acct.balance, acct.credit, acct.blocked, acct.leverage);
-                                println!("  read-only (investor): {}", acct.is_read_only());
-                                println!("
-  Balance read natively. The phone can do what the terminal does.");
-                            }
-                            Err(e) => println!("  account state not read: {e}"),
-                        }
-                    } else {
-                        println!("
-  Synchronization returned status {status}. Login values reached the");
-                        println!("  server but were not accepted; check the base URL and guid.");
-                    }
-                }
-                Err(e) => println!("  synchronization failed: {e}"),
-            }
-        }
-        _ => {
-            println!("
-  --- no loginid service configured; trying zeroed login values ---");
-            let zeroed = LoginValues { login_id: 0, extended_login_id: 0, tag88_value: [0; 8], tag134_value: [0; 8] };
-            match session.synchronize(&zeroed) {
-                Ok((status, stream)) => println!("  reply status {status}, {} bytes decoded", stream.len()),
-                Err(e) => println!("  synchronization failed: {e}"),
-            }
-            println!("  Set MT5_LOGINID_BASE and MT5_LOGINID_GUID to synchronize for real.");
-        }
-    }
+    println!("  Stopping after authentication diagnostics. Synchronization requires a verified");
+    println!("  local LoginIdResolver for this broker/build. No guessed values are sent.");
     Ok(())
 }

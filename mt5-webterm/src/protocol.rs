@@ -32,6 +32,53 @@ pub const LOGIN_SIZE: usize = 912;
 pub const QUOTE_SIZE: usize = 50;
 pub const ORDER_REC_SIZE: usize = 356;
 
+pub const MAX_WIRE_BYTES: usize = 4 * 1024 * 1024 + 8;
+pub const MAX_COMMAND_BYTES: usize = MAX_WIRE_BYTES - 28;
+
+/// Validate framing before slicing or decrypting. CBC ciphertext must contain
+/// complete nonempty blocks; the declared length is not an allocation hint.
+pub fn unpack_wire(raw: &[u8]) -> Result<&[u8], String> {
+    if raw.len() < 24 || raw.len() > MAX_WIRE_BYTES {
+        return Err("invalid wire frame size".into());
+    }
+    let length = u32::from_le_bytes(raw[..4].try_into().unwrap()) as usize;
+    let version = u32::from_le_bytes(raw[4..8].try_into().unwrap());
+    if version != 1 || length != raw.len() - 8 || length % 16 != 0 {
+        return Err("invalid wire length, version or CBC alignment".into());
+    }
+    Ok(&raw[8..])
+}
+
+pub fn validate_fixed_string(value: &str, units: usize, name: &str) -> Result<(), String> {
+    if value.is_empty() || value.contains('\0') || value.encode_utf16().count() > units {
+        return Err(format!("{name} is empty, contains NUL, or exceeds {units} UTF-16 units"));
+    }
+    Ok(())
+}
+
+pub fn validate_login(password: &str, server: &str) -> Result<(), String> {
+    validate_fixed_string(password, (476 - 4) / 2, "password")?;
+    validate_fixed_string(server, 128, "server")
+}
+
+pub fn timeframe_seconds(tf: &str) -> Result<i64, String> {
+    match tf {
+        "M1" => Ok(60), "M5" => Ok(300), "M15" => Ok(900), "M30" => Ok(1800),
+        "H1" => Ok(3600), "H4" => Ok(14400), "D1" => Ok(86400),
+        _ => Err(format!("unsupported timeframe: {tf}")),
+    }
+}
+
+/// Safe wire range for a recent-bars query. The ten-bar margin is bounded.
+pub fn history_window(tf: &str, count: usize, until: i64) -> Result<(i64, i64), String> {
+    let seconds = timeframe_seconds(tf)?;
+    if count > 5000 || !(0..=i32::MAX as i64).contains(&until) {
+        return Err("history count or timestamp exceeds supported bounds".into());
+    }
+    let span = (count as i64 + 10) * seconds;
+    Ok((until.saturating_sub(span).max(0), until))
+}
+
 pub fn pack_wire(encrypted: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(8 + encrypted.len());
     out.extend_from_slice(&(encrypted.len() as u32).to_le_bytes());
@@ -72,13 +119,15 @@ pub fn parse_response(data: &[u8]) -> Option<Frame> {
 
 pub fn utf16_le(s: &str, width: usize) -> Vec<u8> {
     let mut out = vec![0u8; width];
-    for (i, unit) in s.encode_utf16().enumerate() {
-        let o = i * 2;
-        if o + 1 >= width {
-            break;
+    let mut offset = 0;
+    for ch in s.chars() {
+        let mut units = [0; 2];
+        let units = ch.encode_utf16(&mut units);
+        if offset + units.len() * 2 > width { break; }
+        for unit in units {
+            out[offset..offset + 2].copy_from_slice(&unit.to_le_bytes());
+            offset += 2;
         }
-        out[o] = (unit & 0xff) as u8;
-        out[o + 1] = (unit >> 8) as u8;
     }
     out
 }
@@ -94,11 +143,11 @@ pub fn from_utf16_le(bytes: &[u8]) -> String {
 
 pub fn pack_login(login: u64, password: &str, server: &str) -> Vec<u8> {
     let mut pl = vec![0u8; LOGIN_SIZE];
-    let pw = utf16_le(password, (password.encode_utf16().count() * 2).min(LOGIN_SIZE.saturating_sub(4)));
+    let pw = utf16_le(password, (password.encode_utf16().count() * 2).min(472));
     let n = pw.len().min(LOGIN_SIZE - 4);
     pl[4..4 + n].copy_from_slice(&pw[..n]);
     let ip = utf16_le(server, 256);
-    let chars = server.encode_utf16().count() as u32;
+    let chars = from_utf16_le(&ip).encode_utf16().count() as u32;
     pl[476..480].copy_from_slice(&chars.to_le_bytes());
     let ipn = ip.len().min(LOGIN_SIZE - 480);
     pl[480..480 + ipn].copy_from_slice(&ip[..ipn]);
@@ -186,5 +235,42 @@ mod tests {
     fn op_size() {
         let op = pack_op("XAUUSD", 1, TRADE_MARKET, 0.01, 2, TYPE_BUY, 2000.0, 1990.0, 2010.0, 0, FILL_FOK, "gd", 0, 0.0, 30);
         assert_eq!(op.len(), 248);
+    }
+}
+
+#[cfg(test)]
+mod boundary_tests {
+    use super::*;
+    #[test]
+    fn short_wire_frames_and_invalid_headers_are_errors() {
+        for len in 0..24 { assert!(unpack_wire(&vec![0; len]).is_err()); }
+        let good = pack_wire(&[42; 16]);
+        assert_eq!(unpack_wire(&good).unwrap(), &[42; 16]);
+        let mut bad = good.clone(); bad[0] = 32;
+        assert!(unpack_wire(&bad).is_err());
+        let mut bad = good.clone(); bad[4] = 2;
+        assert!(unpack_wire(&bad).is_err());
+        assert!(unpack_wire(&pack_wire(&[0; 17])).is_err());
+    }
+
+    #[test]
+    fn login_strings_cannot_overlap_fields_or_misreport_lengths() {
+        assert!(validate_login(&"x".repeat(237), "Demo").is_err());
+        assert!(validate_login("pw", &"x".repeat(129)).is_err());
+        assert!(validate_login("p\0w", "Demo").is_err());
+        let data = pack_login(7, &"x".repeat(1000), &"y".repeat(200));
+        assert_eq!(u32::from_le_bytes(data[476..480].try_into().unwrap()), 128);
+        assert_eq!(u64::from_le_bytes(data[736..744].try_into().unwrap()), 7);
+        assert!(data[744..].iter().all(|&byte| byte == 0));
+        assert_eq!(from_utf16_le(&utf16_le("a😀", 4)), "a");
+    }
+
+    #[test]
+    fn history_ranges_reject_overflow_and_unknown_timeframes() {
+        assert!(history_window("M1", usize::MAX, 10).is_err());
+        assert!(history_window("unknown", 10, 10).is_err());
+        assert!(history_window("M1", 1, i64::MAX).is_err());
+        assert_eq!(history_window("M1", 1, 100).unwrap(), (0, 100));
+        assert_eq!(history_window("M1", 10, 2000).unwrap(), (800, 2000));
     }
 }
