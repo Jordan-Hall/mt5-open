@@ -11,10 +11,10 @@
 //!   fallback ([`inflate_inner`]).
 
 use crate::error::{ProtocolError, Result};
-use flate2::read::{DeflateDecoder, ZlibDecoder};
+use flate2::{Decompress, FlushDecompress, Status};
 use flate2::write::{DeflateEncoder, ZlibEncoder};
 use flate2::Compression;
-use std::io::{Read, Write};
+use std::io::Write;
 
 pub const MAX_MESSAGE: usize = 64 * 1024 * 1024;
 
@@ -210,31 +210,32 @@ pub fn inflate_inner(data: &[u8], limit: usize) -> Result<(Vec<u8>, &'static str
 }
 
 fn try_inflate(data: &[u8], limit: usize, zlib_header: bool) -> Result<Vec<u8>> {
-    // Read at most limit+1 bytes so an over-budget stream is caught, then confirm
-    // the whole input was consumed (no trailing compressed bytes).
+    let mut decoder = Decompress::new(zlib_header);
     let mut out = Vec::new();
-    let consumed = if zlib_header {
-        let mut dec = ZlibDecoder::new(data);
-        dec.by_ref()
-            .take(limit as u64 + 1)
-            .read_to_end(&mut out)
+    let mut input_position = 0usize;
+    let mut scratch = [0u8; 8192];
+    loop {
+        let before_in = decoder.total_in();
+        let before_out = decoder.total_out();
+        let status = decoder.decompress(&data[input_position..], &mut scratch, FlushDecompress::Finish)
             .map_err(|e| ProtocolError::new(e.to_string()))?;
-        dec.total_in() as usize
-    } else {
-        let mut dec = DeflateDecoder::new(data);
-        dec.by_ref()
-            .take(limit as u64 + 1)
-            .read_to_end(&mut out)
-            .map_err(|e| ProtocolError::new(e.to_string()))?;
-        dec.total_in() as usize
-    };
-    if out.len() > limit {
-        return Err(ProtocolError::new("inflation budget exceeded"));
+        let consumed = (decoder.total_in() - before_in) as usize;
+        let produced = (decoder.total_out() - before_out) as usize;
+        input_position += consumed;
+        if produced > limit.saturating_sub(out.len()) {
+            return Err(ProtocolError::new("inflation budget exceeded"));
+        }
+        out.extend_from_slice(&scratch[..produced]);
+        if status == Status::StreamEnd {
+            if input_position != data.len() {
+                return Err(ProtocolError::new("trailing compressed bytes"));
+            }
+            return Ok(out);
+        }
+        if consumed == 0 && produced == 0 {
+            return Err(ProtocolError::new("incomplete compressed stream"));
+        }
     }
-    if consumed != data.len() {
-        return Err(ProtocolError::new("trailing compressed bytes"));
-    }
-    Ok(out)
 }
 
 /// Compress with zlib (or raw DEFLATE when `raw`). Used to build history
@@ -298,5 +299,20 @@ mod tests {
         // Budget enforcement.
         let comp = deflate(&data, false);
         assert!(inflate_inner(&comp, 4).is_err());
+    }
+}
+
+#[cfg(test)]
+mod strict_stream_tests {
+    use super::*;
+    #[test]
+    fn every_truncated_stream_is_rejected() {
+        for raw in [false, true] {
+            let encoded = deflate(b"a complete stream must include its end marker", raw);
+            for end in 0..encoded.len() {
+                assert!(inflate_inner(&encoded[..end], 100).is_err(), "raw={raw}, end={end}");
+            }
+            assert_eq!(inflate_inner(&encoded, 100).unwrap().0, b"a complete stream must include its end marker");
+        }
     }
 }

@@ -55,7 +55,7 @@ pub fn startup_decrypt_default(data: &[u8]) -> Vec<u8> {
 }
 
 /// The stateful session cipher. Feedback is the plaintext byte; `position`
-/// advances through the key and never resets, so encrypting a message split
+/// advances through the key (rebasing only on counter overflow), so a message split
 /// into chunks yields the same bytes as encrypting it whole.
 pub struct SessionCipher {
     key: Vec<u8>,
@@ -73,22 +73,28 @@ impl SessionCipher {
 
     pub fn encrypt(&mut self, data: &[u8]) -> Vec<u8> {
         let mut out = vec![0u8; data.len()];
+        let mut index = self.position % self.key.len();
         for (i, &plain) in data.iter().enumerate() {
-            out[i] = plain ^ self.previous_plain.wrapping_add(self.key[self.position % self.key.len()]);
+            out[i] = plain ^ self.previous_plain.wrapping_add(self.key[index]);
             self.previous_plain = plain;
-            self.position += 1;
+            index += 1;
+            if index == self.key.len() { index = 0; }
         }
+        self.position = self.position.checked_add(data.len()).unwrap_or(index);
         out
     }
 
     pub fn decrypt(&mut self, data: &[u8]) -> Vec<u8> {
         let mut out = vec![0u8; data.len()];
+        let mut index = self.position % self.key.len();
         for (i, &cipher) in data.iter().enumerate() {
-            let plain = cipher ^ self.previous_plain.wrapping_add(self.key[self.position % self.key.len()]);
+            let plain = cipher ^ self.previous_plain.wrapping_add(self.key[index]);
             out[i] = plain;
             self.previous_plain = plain;
-            self.position += 1;
+            index += 1;
+            if index == self.key.len() { index = 0; }
         }
+        self.position = self.position.checked_add(data.len()).unwrap_or(index);
         out
     }
 }
@@ -130,4 +136,20 @@ mod tests {
         decoded.extend(d.decrypt(&encoded[33..]));
         assert_eq!(decoded, raw);
     }
+    #[test]
+    fn counter_overflow_preserves_non_power_of_two_key_phase() {
+        let key = [1u8, 2, 3, 4, 5, 6, 7];
+        let mut actual = SessionCipher::new(&key).unwrap();
+        actual.position = usize::MAX - 3;
+        let mut reference = SessionCipher::new(&key).unwrap();
+        reference.position = actual.position % key.len();
+        let mut rx = SessionCipher::new(&key).unwrap();
+        rx.position = actual.position;
+        for message in [b"first chunk".as_slice(), b"second chunk"] {
+            let encoded = actual.encrypt(message);
+            assert_eq!(encoded, reference.encrypt(message));
+            assert_eq!(rx.decrypt(&encoded), message);
+        }
+    }
+
 }

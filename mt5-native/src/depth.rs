@@ -56,7 +56,7 @@ pub fn decode_depth_record(data: &[u8]) -> Result<(DepthRecord, usize)> {
     if count > 1_000_000 {
         return Err(ProtocolError::new("implausible depth entry count"));
     }
-    let mut entries = Vec::with_capacity(count as usize);
+    let mut entries = Vec::new();
     for _ in 0..count {
         entries.push(DepthEntry {
             mask: r.packed(64, false)? as u64,

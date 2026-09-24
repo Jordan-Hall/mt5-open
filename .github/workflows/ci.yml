@@ -29,7 +29,17 @@ jobs:
           retention-days: 1
       - name: Install Rust
         run: rustup toolchain install stable --profile minimal --component clippy --component rustfmt
+      - name: Resolve dependency changes for review
+        run: |
+          cargo +stable metadata --format-version 1 > /tmp/cargo-metadata.json
+          git diff -- Cargo.lock
+      - name: Test default features
+        run: cargo +stable test --workspace --locked
       - name: Test all crates and features
         run: cargo +stable test --workspace --all-features --locked
       - name: Clippy
         run: cargo +stable clippy --workspace --all-targets --all-features --locked
+      - name: Measure codec CPU paths
+        run: |
+          cargo +stable run --release -p mt5_native --example bitpack_bench --locked
+          cargo +stable run --release -p mt5_webterm --example quote_bench --locked
