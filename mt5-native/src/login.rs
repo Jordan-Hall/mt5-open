@@ -2,8 +2,11 @@
 //!
 //! The additional login values (`login_id`, `extended_login_id` and the two
 //! wire tags) are computed from supplied `F28`/`F35` results by the documented
-//! wrapper arithmetic. The inner `F28`/`F35` mappings are not established here; their results
-//! must come from an independently verified implementation. All additions wrap mod 2^64.
+//! wrapper arithmetic. Modern F28 and all F35 mappings remain unestablished.
+//! An experimental pre-4852 F28 evaluator is available in [`legacy`].
+//! All additions wrap mod 2^64.
+
+pub mod legacy;
 
 use crate::md5::md5;
 use crate::tlv::encode_tlvs;

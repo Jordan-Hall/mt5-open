@@ -47,16 +47,46 @@ The numeric account login belongs to the broker account. The separate
 `LoginValues.login_id` and `extended_login_id` are fields in the reconstructed
 command-12 profile, not account numbers or independently discoverable tokens.
 The wrapper is implemented and fixture-tested, including build thresholds 4852
-and 5409. The inner mappings from opaque tag-28/tag-35 inputs to F28/F35 outputs
-are **not established by the repository's evidence**.
+and 5409. Modern tag-28 and all tag-35 inner mappings remain unestablished.
 
-`LoginIdResolver` is an in-process extension point, not a completed derivation
-algorithm. `UnsupportedLoginProfile` deliberately returns an error. No values
-are guessed, replaced with zero, scraped from a terminal, or requested over
-HTTP. Absence of input tags does not establish that zero values are valid.
-A real implementation requires independent, authorized input/output evidence or
-an algorithm for the relevant client/server builds. Removing a vendor adapter
-alone does not prove what a broker will accept.
+### Experimental legacy tag-28 calculation
+
+`login::legacy::decode_tag28(server_build, bytes)` implements an original,
+bounded interpreter of the arithmetic grammar reconstructed from inspected
+public source. `derive_login_id` also applies the primary-login wrapper and
+returns `LegacyLoginId { login_id, tag88_value }`. It does not fabricate an
+extended value, implement `LoginIdResolver`, or change the default probe.
+
+The legacy program consists of little-endian u64 words. Each instruction has
+an operation word and two operand words. Its selector is `(word >> 21) & 255`.
+Selectors 0x54, 0x70, 0x91, 0xab, 0xa9, 0xb1 and 0xc8 mean AND, OR, XOR, wrapping
+addition, wrapping subtraction, left shift and unsigned right shift. Shift
+counts are reduced modulo 24. Only the left operand recognizes selector 0xf5
+as a reference to the accumulator, which starts at zero. Selector 0xd8 returns
+that accumulator without reading operands; aligned trailing words are ignored.
+Unknown opcodes, truncation, missing termination and oversized programs fail.
+The evaluator interprets data; it never executes received bytes as machine code.
+
+The inspected call site selects a different calculation at server build 4852.
+Therefore the public function rejects build zero and every build >= 4852 even
+when bytes happen to resemble legacy instructions. Passing the numerical guard
+is not proof that a specific older broker uses this grammar. No build downgrade
+or automatic profile guessing is performed.
+
+Tests cover seven operations, accumulator semantics, wraparound, modulo-24
+shifts, malformed programs, resource limits and 512 synthetic multi-instruction
+programs against a bitwise arithmetic model. A synthetic subtraction program
+also reproduces the primary fields of the existing outer-wrapper fixture.
+These are not successful native-session recordings or independent broker
+conformance vectors. Legacy broker acceptance is still unverified; F35 and
+modern F28 require additional authorized evidence.
+
+`LoginIdResolver` remains an in-process extension point, not a completed modern
+derivation algorithm. `UnsupportedLoginProfile` deliberately returns an error.
+No missing results are guessed, replaced with zero, scraped from a terminal, or
+requested over HTTP. An actual arithmetic program evaluating to zero is not a
+missing-result fallback. Absence of input tags does not establish that zero
+values are valid. Removing an adapter alone does not prove broker acceptance.
 
 Contexts include the client build, server build, record build, original challenge,
 and ordered auth tags. `input(28)` and `input(35)` reject empty or duplicate inputs
@@ -79,7 +109,7 @@ Native conformance fixtures are under `mt5-native/tests/fixtures`.
 Historical HTTP adapter cases were removed with that adapter; remaining wire
 vectors are unchanged. Loopback tests use synthetic server replies and synthetic
 F28/F35 outputs. They validate transport/state transitions and wrapper wiring,
-not the unknown derivation, a real certificate, or successful broker login.
+not a modern derivation, a real certificate, or successful broker login.
 
 ## Read-only diagnostic probe
 
