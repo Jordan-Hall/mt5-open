@@ -2,86 +2,39 @@ name: Native authentication
 
 on:
   push:
-    branches: [fix/direct-native-auth]
+    branches: [fix/direct-native-auth, master]
+  pull_request:
+    branches: [master]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - name: Apply the reviewed implementation to the isolated branch
-        run: |
-          python3 - <<'PY'
-          import base64, gzip, hashlib, json
-          from pathlib import Path
-          path = Path('.github/native-implementation.b64')
-          encoded = path.read_text().replace('Pe1/c/nb8dHWd', 'Pe1/c/nb8HWd')
-          raw = gzip.decompress(base64.b64decode(encoded))
-          assert hashlib.sha256(raw).hexdigest() == '8f11963570ce165b7bf53449fd398097cebd35690936f6083eea9ee6480bcaeb'
-          payload = json.loads(raw)
-          exec(payload['transform'])
-          for name, content in payload['files'].items():
-              Path(name).write_text(content)
-          path.unlink()
-          p = Path('mt5-native/tests/conformance.rs')
-          s = p.read_text().replace('assert_eq!(total_cases, 77, "expected 77 fixture cases");', 'assert_eq!(total_cases, 74, "expected 74 native fixture cases after removing three hosted-adapter cases");')
-          p.write_text(s)
-          p = Path('mt5-native/src/handshake.rs')
-          s = p.read_text()
-          marker = '    /// The environment metadata this client would present in tag 127.'
-          addition = '''    /// Challenge for this authenticated connection's login-value wrapper.
-              /// Distinct from certificate_challenge(), which requires a certificate step.
-              pub fn login_challenge(&self) -> Result<&[u8; 16]> {
-                  self.expect(Phase::SessionKeysReady)?;
-                  self.server_challenge.as_ref().ok_or_else(|| ProtocolError::new("no server challenge stored"))
-              }
-
-          '''
-          addition = '\n'.join(line[10:] if line.startswith('          ') else line for line in addition.split('\n'))
-          assert marker in s and 'pub fn login_challenge(' not in s
-          p.write_text(s.replace(marker, addition + marker))
-          PY
-      - name: Select Rust and format changed transport files
-        run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
-          rustup component add rustfmt
-          rustfmt --edition 2024 mt5-session/src/lib.rs mt5-session/tests/loginid.rs mt5-session/examples/auth_probe.rs
-      - name: Codec tests and lockfile reconciliation
-        run: cargo test -p mt5_native
-      - name: Session loopback tests
+        with:
+          persist-credentials: false
+      - name: Select Rust
+        run: rustup toolchain install stable --profile minimal && rustup default stable
+      - name: Native codec and conformance tests
+        run: cargo test --locked -p mt5_native
+      - name: Direct-session loopback tests
         run: cargo test --locked -p mt5_session --features live
-      - name: Existing web-client unit tests
+      - name: Existing WebTerminal unit tests
         run: cargo test --locked -p mt5_webterm --lib
-      - name: Verify native dependency isolation
+      - name: Check native dependency isolation
         run: |
-          cargo tree --locked -p mt5_session --features live --prefix none > /tmp/native-dependencies.txt
-          cat /tmp/native-dependencies.txt
-          if grep -E '^(ureq|reqwest|mt5_webterm) ' /tmp/native-dependencies.txt; then exit 1; fi
-          git diff --check
-      - name: Commit validated implementation on the review branch only
-        run: |
-          test "${GITHUB_REF}" = refs/heads/fix/direct-native-auth
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add -u
-          git restore --staged .github/workflows/native-auth.yml
-          git commit -m 'Remove hosted dependencies and harden direct native authentication'
-          git push origin HEAD:refs/heads/fix/direct-native-auth
-      - name: Export source and validation changes
+          cargo tree --locked -p mt5_session --features live --prefix none > dependencies.txt
+          if grep -E '^(ureq|reqwest|mt5_webterm) ' dependencies.txt; then exit 1; fi
+      - name: Export source
         if: always()
-        run: |
-          git diff > changes.patch
-          tar --exclude=.git --exclude=target --exclude=source-tested.tar.gz -czf source-tested.tar.gz Cargo.toml Cargo.lock README.md mt5-native mt5-session mt5-webterm .github
+        run: git archive --format=tar HEAD -o source.tar
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: implementation-validation
-          path: |
-            source-tested.tar.gz
-            changes.patch
+          name: source
+          path: source.tar
           retention-days: 7
