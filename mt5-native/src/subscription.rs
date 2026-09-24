@@ -1,11 +1,4 @@
-//! Client-originated requests: quote and depth subscriptions, dated bar-history
-//! requests, and the external login calculation (F28/F35) HTTP adapter contract.
-//!
-//! The F28/F35 inner functions live in an external calculation service and are
-//! not part of this executable; only the request/response adapter is defined.
-//! This module builds the documented POST envelope and returns an explicit
-//! marker that the remote result is not synthesized here — never a guessed
-//! integer.
+//! Native quote/depth subscriptions and dated bar-history requests.
 
 use crate::error::{ProtocolError, Result};
 
@@ -73,39 +66,6 @@ pub fn bar_month_request(symbol: &str, year: i32, month: i32, day: i32) -> Resul
     Ok(out)
 }
 
-/// The documented external login calculation adapter. `tag` is 28 (F28, the
-/// `/CheckMT5` guid check) or 35 (F35, the `/DecodeEx` guid decode). The inner
-/// remote function is not part of this executable and is not synthesized.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HttpContract {
-    pub method: &'static str,
-    pub relative_path: &'static str,
-    pub content_type: &'static str,
-    pub body: Vec<u8>,
-    pub content_length: usize,
-    pub result: &'static str,
-}
-
-pub fn additional_login_http_contract(tag: u8, value: &[u8], server_build: i32) -> Result<HttpContract> {
-    if tag != 28 && tag != 35 {
-        return Err(ProtocolError::new("not an additional-login input tag"));
-    }
-    let mut body = base64_encode(value).into_bytes();
-    if tag == 28 && server_build >= 4852 {
-        let mut prefixed = b"loginidnew5".to_vec();
-        prefixed.extend_from_slice(&body);
-        body = prefixed;
-    }
-    Ok(HttpContract {
-        method: "POST",
-        relative_path: if tag == 28 { "/CheckMT5?guid=" } else { "/DecodeEx?guid=" },
-        content_type: "application/text",
-        content_length: body.len(),
-        body,
-        result: "decimal UInt64 response text; remote function intentionally not synthesized",
-    })
-}
-
 /// Standard base64 with padding.
 pub fn base64_encode(data: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -146,21 +106,6 @@ mod tests {
     fn base64_matches_python() {
         assert_eq!(base64_encode(&[0x00, 0x01, 0x02]), "AAEC");
         assert_eq!(base64_encode(b"any carnal pleasure."), "YW55IGNhcm5hbCBwbGVhc3VyZS4=");
-    }
-
-    #[test]
-    fn login_contract_fixtures() {
-        // request_contract_only_not_inner_function.
-        let old = additional_login_http_contract(28, &[0, 1, 2], 4851).unwrap();
-        assert_eq!(old.body, b"AAEC");
-        assert_eq!(old.relative_path, "/CheckMT5?guid=");
-        let new = additional_login_http_contract(28, &[0, 1, 2], 4852).unwrap();
-        assert_eq!(new.body, b"loginidnew5AAEC");
-        assert_eq!(new.content_length, 15);
-        let t35 = additional_login_http_contract(35, &[0, 1, 2], 5500).unwrap();
-        assert_eq!(t35.body, b"AAEC");
-        assert_eq!(t35.relative_path, "/DecodeEx?guid=");
-        assert!(additional_login_http_contract(9, &[], 5500).is_err());
     }
 
     #[test]

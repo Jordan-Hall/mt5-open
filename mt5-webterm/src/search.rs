@@ -8,7 +8,6 @@ const HMAC_KEY: [u8; 32] = [
     61, 123, 21, 22, 214, 234, 187, 52, 217, 214, 99, 227, 98, 62, 27, 215, 251, 220, 174, 244, 87,
     59, 223, 53, 127, 168, 207, 11, 190, 173, 146, 127,
 ];
-const SEARCH_URL: &str = "http://search.mtapi.io/Search";
 const SEARCHMQ_URL: &str = "https://updates.metaquotes.net/public/mt5/network";
 const WEB_PORT: u16 = 443;
 
@@ -56,21 +55,13 @@ fn cookie() -> String {
     format!("_fz_uniq={val};uniq={val};age={};tid=0", timestamp.saturating_sub(86400))
 }
 
+/// Compatibility alias for the first-party directory lookup.
 pub async fn search_company(company: &str) -> Vec<Value> {
-    let url = format!("{SEARCH_URL}?company={}&mt5=true", urlencoding_lite(company));
-    let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(12)).build();
-    let Ok(client) = client else { return vec![] };
-    let Ok(resp) = client.get(url).send().await else { return vec![] };
-    let Ok(v) = resp.json::<Value>().await else { return vec![] };
-    match v {
-        Value::Array(a) => a,
-        Value::Object(map) => map.get("result").or(map.get("results")).cloned().and_then(|x| x.as_array().cloned()).unwrap_or_default(),
-        _ => vec![],
-    }
+    search_mq(company).await
 }
 
 pub async fn search_mq(company: &str) -> Vec<Value> {
-    let body = format!("company={company}&code=mt5");
+    let body = format!("company={}&code=mt5", urlencoding_lite(company));
     let full = format!("{body}&signature={}&ver=2", signature(&body));
     let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(12)).build();
     let Ok(client) = client else { return vec![] };
@@ -114,10 +105,7 @@ fn hits_named(payload: &[Value], server_name: &str) -> Vec<ServerHit> {
 
 pub async fn find_web_terminal(server_name: &str) -> Result<(String, u16), String> {
     let mq = search_mq(server_name).await;
-    let mut hits = hits_named(&mq, server_name);
-    if hits.is_empty() {
-        hits = hits_named(&search_company(server_name).await, server_name);
-    }
+    let hits = hits_named(&mq, server_name);
     let access = hits.first().map(|h| h.access.clone()).ok_or_else(|| format!("server not found: {server_name}"))?;
     let endpoint = pick_web_terminal(&access)?;
     let (host, port_s) = endpoint.rsplit_once(':').ok_or("bad endpoint")?;
@@ -131,10 +119,7 @@ pub async fn find_web_terminal(server_name: &str) -> Result<(String, u16), Strin
 /// that question cannot be asked without the full list.
 pub async fn access_points(server_name: &str) -> Result<Vec<String>, String> {
     let mq = search_mq(server_name).await;
-    let mut hits = hits_named(&mq, server_name);
-    if hits.is_empty() {
-        hits = hits_named(&search_company(server_name).await, server_name);
-    }
+    let hits = hits_named(&mq, server_name);
     let access = hits.first().map(|h| h.access.clone()).ok_or_else(|| format!("server not found: {server_name}"))?;
     let mut out = Vec::new();
     for item in access {
@@ -158,7 +143,7 @@ pub async fn access_points(server_name: &str) -> Result<Vec<String>, String> {
 /// signing in.
 pub async fn list_servers(company: &str) -> Result<Vec<String>, String> {
     let mut names = Vec::new();
-    for payload in [search_mq(company).await, search_company(company).await] {
+    for payload in [search_mq(company).await] {
         for entry in &payload {
             let Some(results) = entry.get("results").and_then(|x| x.as_array()) else { continue };
             for result in results {

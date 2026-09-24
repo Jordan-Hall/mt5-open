@@ -1,11 +1,8 @@
 //! mt5_native — an offline codec for the MT5 application wire protocol
 //! (revision 3), built to interoperate with a broker account the operator holds.
 //!
-//! DISABLED BY POLICY. This crate is a byte-in/byte-out codec only: there is no
-//! socket, no connection, and no order-send path anywhere in it, and the host application
-//! does not wire it to a broker. The live gate below refuses unless the crate is
-//! deliberately built with `--features live`, which this repo does not enable.
-//! See DISABLED.md.
+//! This crate performs no network I/O. The `live` feature permits a separate
+//! transport crate to opt into network use; it is disabled by default.
 //!
 //! What is present: revision-3 framing and reassembly, the two byte-feedback
 //! stream ciphers, the MD5-based credential/hardware derivations, the hello /
@@ -15,14 +12,14 @@
 //! groups and trailing-hour segments, the synchronization stream reader and the
 //! command-12 synchronization request with its login-value wrapper, quote/depth
 //! subscriptions, trade/tick/bar history requests, the password-change request,
-//! the F28/F35 external-calculation HTTP contract, the signed 800-byte trade
+//! the signed 800-byte trade
 //! record with its full sign/compress/frame pipeline, and the trade-update
 //! parser. Every layer is validated offline against the `mt5_protocol/`
 //! conformance vectors.
 //!
 //! If ever enabled, any execution path must additionally pass the host application's demo
 //! reconciliation / idempotency / uncertainty / risk / soak gates before any
-//! real use (docs/VANTAGE_TRANSPORT_DECISION.md).
+//! real use. See AUTH.md for the unverified login-derivation boundary.
 
 pub mod error;
 pub mod hexutil;
@@ -56,8 +53,7 @@ pub use error::{ProtocolError, Result};
 pub use frame::{Frame, FrameParser, COMPRESSED, FINAL};
 pub use cipher::{SessionCipher, startup_decrypt_default, startup_encrypt_default};
 
-/// Whether live use is permitted. False in this repo; only a deliberate
-/// `--features live` build could flip it, which policy does not allow.
+/// Whether a separate transport may opt into network use; false by default.
 pub const LIVE_ENABLED: bool = cfg!(feature = "live");
 
 /// Tripwire that ANY future live/connect/send path MUST call first. It hard-fails
@@ -70,7 +66,7 @@ pub fn ensure_live_allowed() {
     {
         assert!(
             LIVE_ENABLED,
-            "mt5-native is DISABLED by policy: live MT5 use is not permitted (see DISABLED.md)"
+            "mt5-native is DISABLED by policy: live MT5 use is not permitted"
         );
     }
 }
