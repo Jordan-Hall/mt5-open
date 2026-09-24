@@ -27,9 +27,30 @@ jobs:
           for name, content in payload['files'].items():
               Path(name).write_text(content)
           path.unlink()
+          p = Path('mt5-native/tests/conformance.rs')
+          s = p.read_text().replace('assert_eq!(total_cases, 77, "expected 77 fixture cases");', 'assert_eq!(total_cases, 74, "expected 74 native fixture cases after removing three hosted-adapter cases");')
+          p.write_text(s)
+          p = Path('mt5-native/src/handshake.rs')
+          s = p.read_text()
+          marker = '    /// The environment metadata this client would present in tag 127.'
+          addition = '''    /// Challenge for this authenticated connection's login-value wrapper.
+              /// Distinct from certificate_challenge(), which requires a certificate step.
+              pub fn login_challenge(&self) -> Result<&[u8; 16]> {
+                  self.expect(Phase::SessionKeysReady)?;
+                  self.server_challenge.as_ref().ok_or_else(|| ProtocolError::new("no server challenge stored"))
+              }
+
+          '''
+          addition = '\n'.join(line[10:] if line.startswith('          ') else line for line in addition.split('\n'))
+          assert marker in s and 'pub fn login_challenge(' not in s
+          p.write_text(s.replace(marker, addition + marker))
           PY
-      - name: Select Rust
-        run: rustup toolchain install stable --profile minimal && rustup default stable
+      - name: Select Rust and format changed transport files
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup component add rustfmt
+          rustfmt --edition 2024 mt5-session/src/lib.rs mt5-session/tests/loginid.rs mt5-session/examples/auth_probe.rs
       - name: Codec tests and lockfile reconciliation
         run: cargo test -p mt5_native
       - name: Session loopback tests
@@ -48,6 +69,7 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -u
+          git restore --staged .github/workflows/native-auth.yml
           git commit -m 'Remove hosted dependencies and harden direct native authentication'
           git push origin HEAD:refs/heads/fix/direct-native-auth
       - name: Export source and validation changes
