@@ -1,0 +1,40 @@
+name: Native authentication
+
+on:
+  push:
+    branches: [fix/direct-native-auth, master]
+  pull_request:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Select Rust
+        run: rustup toolchain install stable --profile minimal && rustup default stable
+      - name: Native codec and conformance tests
+        run: cargo test --locked -p mt5_native
+      - name: Direct-session loopback tests
+        run: cargo test --locked -p mt5_session --features live
+      - name: Existing WebTerminal unit tests
+        run: cargo test --locked -p mt5_webterm --lib
+      - name: Check native dependency isolation
+        run: |
+          cargo tree --locked -p mt5_session --features live --prefix none > dependencies.txt
+          if grep -E '^(ureq|reqwest|mt5_webterm) ' dependencies.txt; then exit 1; fi
+      - name: Export source
+        if: always()
+        run: git archive --format=tar HEAD -o source.tar
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: source
+          path: source.tar
+          retention-days: 7

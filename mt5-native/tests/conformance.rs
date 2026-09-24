@@ -7,7 +7,7 @@
 //! * fixture ids are unique and both files declare revision 3;
 //! * `records.json` field offsets are contiguous and sum to each record size;
 //! * the revision-3 behavioural cases (commands 50/51, column groups, trailing
-//!   hours, the login HTTP contract, the dated bar request) and the corrected
+//!   hours, and the dated bar request) and the corrected
 //!   command-51 snapshots decode to their expected values;
 //! * the multi-frame session-continuity fixture reproduces byte-for-byte.
 //!
@@ -27,7 +27,7 @@ use mt5_native::history::{read_column_group, read_trailing_hour_segment, ByteRea
 use mt5_native::keys::{derive_session_key_from_digest, session_key_padded_input};
 use mt5_native::quotes::{decode_quotes, QuoteRow};
 use mt5_native::subscription::{
-    additional_login_http_contract, bar_month_request, date_token, make_depth_subscription_payload,
+    bar_month_request, date_token, make_depth_subscription_payload,
     make_subscription_payload,
 };
 use mt5_native::depth::{decode_depth_record, encode_depth_record, DepthEntry, DepthRecord};
@@ -235,7 +235,7 @@ fn blob_integrity_and_unique_ids() {
             assert!(ids.insert(c["id"].as_str().unwrap().to_string()), "duplicate id");
         }
     }
-    assert_eq!(total_cases, 77, "expected 77 fixture cases");
+    assert_eq!(total_cases, 74, "expected 74 native fixture cases after removing three hosted-adapter cases");
     assert!(total_blobs >= 59, "expected the documented byte objects, saw {total_blobs}");
 }
 
@@ -291,23 +291,6 @@ fn revision3_cases_decode_to_expected() {
                 let t = read_trailing_hour_segment(&mut r).unwrap();
                 assert_eq!(r.position, raw.len(), "{id}: leftover hour bytes");
                 trailing_to_value(&t)
-            }
-            "request_contract_only_not_inner_function" => {
-                let inp = &case["inputs"];
-                let c = additional_login_http_contract(
-                    inp["tag"].as_u64().unwrap() as u8,
-                    &hexutil::decode(inp["value_hex"].as_str().unwrap()),
-                    inp["server_build"].as_i64().unwrap() as i32,
-                )
-                .unwrap();
-                json!({
-                    "method": c.method,
-                    "relative_path": c.relative_path,
-                    "content_type": c.content_type,
-                    "body_hex": hexutil::encode(&c.body),
-                    "content_length": c.content_length,
-                    "result": c.result,
-                })
             }
             "command102_subtype9_request" => {
                 let inp = &case["inputs"];

@@ -846,57 +846,6 @@
       }
     },
     {
-      "id": "r3-remote-contract-28-4851",
-      "operation": "request_contract_only_not_inner_function",
-      "inputs": {
-        "tag": 28,
-        "server_build": 4851,
-        "value_hex": "000102"
-      },
-      "expected": {
-        "method": "POST",
-        "relative_path": "/CheckMT5?guid=",
-        "content_type": "application/text",
-        "body_hex": "41414543",
-        "content_length": 4,
-        "result": "decimal UInt64 response text; remote function intentionally not synthesized"
-      }
-    },
-    {
-      "id": "r3-remote-contract-28-4852",
-      "operation": "request_contract_only_not_inner_function",
-      "inputs": {
-        "tag": 28,
-        "server_build": 4852,
-        "value_hex": "000102"
-      },
-      "expected": {
-        "method": "POST",
-        "relative_path": "/CheckMT5?guid=",
-        "content_type": "application/text",
-        "body_hex": "6c6f67696e69646e65773541414543",
-        "content_length": 15,
-        "result": "decimal UInt64 response text; remote function intentionally not synthesized"
-      }
-    },
-    {
-      "id": "r3-remote-contract-35-5500",
-      "operation": "request_contract_only_not_inner_function",
-      "inputs": {
-        "tag": 35,
-        "server_build": 5500,
-        "value_hex": "000102"
-      },
-      "expected": {
-        "method": "POST",
-        "relative_path": "/DecodeEx?guid=",
-        "content_type": "application/text",
-        "body_hex": "41414543",
-        "content_length": 4,
-        "result": "decimal UInt64 response text; remote function intentionally not synthesized"
-      }
-    },
-    {
       "id": "r3-bar-dated-request",
       "operation": "command102_subtype9_request",
       "inputs": {

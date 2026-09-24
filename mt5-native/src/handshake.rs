@@ -5,7 +5,7 @@
 //! machine: it produces the frames a client would send and consumes the
 //! plaintext a server would return, deriving and holding the session and trade
 //! keys along the way. It performs no I/O — every method is bytes in / bytes
-//! out — and the crate remains DISABLED by policy.
+//! out. Network I/O belongs to the separately feature-gated transport.
 //!
 //! ```text
 //! Init ──hello()──▶ HelloSent ──on_challenge()──▶ ChallengeReceived
@@ -195,6 +195,13 @@ impl Handshake {
     /// Exact challenge bytes an external certificate signer must sign.
     pub fn certificate_challenge(&self) -> Result<&[u8; 16]> {
         self.expect(Phase::CertificateRequired)?;
+        self.server_challenge.as_ref().ok_or_else(|| ProtocolError::new("no server challenge stored"))
+    }
+
+    /// Challenge for this authenticated connection's login-value wrapper.
+    /// Distinct from certificate_challenge(), which requires a certificate step.
+    pub fn login_challenge(&self) -> Result<&[u8; 16]> {
+        self.expect(Phase::SessionKeysReady)?;
         self.server_challenge.as_ref().ok_or_else(|| ProtocolError::new("no server challenge stored"))
     }
 
