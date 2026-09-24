@@ -43,9 +43,23 @@ struct Outbound {
     reply: oneshot::Sender<Result<Option<Frame>, Error>>,
 }
 
+struct CachedQuote {
+    quote: Quote,
+    bid_received: Option<Instant>,
+    ask_received: Option<Instant>,
+}
+
+impl CachedQuote {
+    fn fresh(&self) -> bool {
+        self.quote.bid > 0.0 && self.quote.ask > 0.0
+            && self.bid_received.is_some_and(|t| t.elapsed() <= QUOTE_MAX_AGE)
+            && self.ask_received.is_some_and(|t| t.elapsed() <= QUOTE_MAX_AGE)
+    }
+}
+
 #[derive(Default)]
 struct Cache {
-    quotes: HashMap<String, (Quote, Instant)>,
+    quotes: HashMap<String, CachedQuote>,
     symbols: HashMap<String, Symbol>,
     decoder: QuoteDecoder,
     account: Option<Account>,
@@ -200,8 +214,8 @@ impl Client {
     pub async fn quote(&self, symbol: &str) -> Option<Quote> {
         if !self.is_connected() { return None; }
         self.inner.cache.read().await.quotes.get(symbol)
-            .filter(|(q, received)| q.bid > 0.0 && q.ask > 0.0 && received.elapsed() <= QUOTE_MAX_AGE)
-            .map(|(q, _)| q.clone())
+            .filter(|q| q.fresh())
+            .map(|q| q.quote.clone())
     }
 
     pub(crate) fn quote_notifier(&self) -> Arc<Notify> { self.inner.changed.clone() }
@@ -305,11 +319,20 @@ async fn apply_frame(cache: &RwLock<Cache>, changed: &Notify, frame: &Frame) -> 
             let mut cache = cache.write().await;
             for mut quote in cache.decoder.decode(&frame.body)? {
                 if quote.bid == 0.0 && quote.ask == 0.0 { continue; }
-                if let Some((previous, _)) = cache.quotes.get(&quote.symbol) {
-                    if quote.bid == 0.0 { quote.bid = previous.bid; }
-                    if quote.ask == 0.0 { quote.ask = previous.ask; }
+                let now = Instant::now();
+                let mut bid_received = (quote.bid > 0.0).then_some(now);
+                let mut ask_received = (quote.ask > 0.0).then_some(now);
+                if let Some(previous) = cache.quotes.get(&quote.symbol) {
+                    if quote.bid == 0.0 {
+                        quote.bid = previous.quote.bid;
+                        bid_received = previous.bid_received;
+                    }
+                    if quote.ask == 0.0 {
+                        quote.ask = previous.quote.ask;
+                        ask_received = previous.ask_received;
+                    }
                 }
-                cache.quotes.insert(quote.symbol.clone(), (quote, Instant::now()));
+                cache.quotes.insert(quote.symbol.clone(), CachedQuote { quote, bid_received, ask_received });
             }
             drop(cache);
             changed.notify_waiters();
@@ -508,7 +531,22 @@ mod tests {
             apply_frame(&cache, &notify, &Frame { tag: 0, cmd_id: CMD_QUOTES, res_code: 0, body }).await.unwrap();
         }
         let cache = cache.read().await;
-        let quote = &cache.quotes["TEST"].0;
+        let quote = &cache.quotes["TEST"].quote;
         assert_eq!((quote.bid, quote.ask), (100.0, 101.0));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn updates_to_one_side_do_not_refresh_the_other_sides_age() {
+        let now = Instant::now();
+        let mut cached = CachedQuote {
+            quote: Quote { bid: 100.0, ask: 101.0, ..Default::default() },
+            bid_received: Some(now), ask_received: Some(now),
+        };
+        assert!(cached.fresh());
+        tokio::time::advance(QUOTE_MAX_AGE + Duration::from_millis(1)).await;
+        cached.bid_received = Some(Instant::now());
+        assert!(!cached.fresh());
+        cached.ask_received = Some(Instant::now());
+        assert!(cached.fresh());
     }
 }

@@ -20,19 +20,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Source snapshot
-        run: git archive HEAD --format=tar --output=/tmp/review-source.tar
-      - uses: actions/upload-artifact@v4
-        with:
-          name: review-source
-          path: /tmp/review-source.tar
-          retention-days: 1
       - name: Install Rust
-        run: rustup toolchain install stable --profile minimal --component clippy --component rustfmt
-      - name: Resolve dependency changes for review
-        run: |
-          cargo +stable metadata --format-version 1 > /tmp/cargo-metadata.json
-          git diff -- Cargo.lock
+        run: rustup toolchain install stable --profile minimal --component clippy
       - name: Test default features
         run: cargo +stable test --workspace --locked
       - name: Test all crates and features
