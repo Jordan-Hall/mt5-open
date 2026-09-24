@@ -92,7 +92,8 @@ pub fn parse_account_update_19(body: &[u8]) -> Result<Vec<AccountState>> {
         return Err(ProtocolError::new("account update count is negative"));
     }
     let stride = UPDATE_PREFIX + ACCOUNT_REC_SIZE;
-    let need = 5 + (count as usize) * stride;
+    let need = (count as usize).checked_mul(stride).and_then(|n| n.checked_add(5))
+        .ok_or_else(|| ProtocolError::new("account update size overflow"))?;
     if body.len() < need {
         return Err(ProtocolError::new(format!(
             "account update is {} bytes, need {need} for {count} records",

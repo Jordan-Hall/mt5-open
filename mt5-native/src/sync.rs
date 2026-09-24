@@ -3,7 +3,7 @@
 //! The stream is consumed across arbitrary fragment boundaries. A tag of zero
 //! triggers a sentinel scan: bytes are skipped until the `0x17` (23) routing
 //! sentinel, and the skipped bytes are returned. This is the specifically
-//! observed tag-zero scan — not a general resynchronization; an unknown grammar
+//! observed tag-zero scan, not a general resynchronization; an unknown grammar
 //! is rejected elsewhere rather than scanned for a plausible tag.
 
 use crate::error::{ProtocolError, Result};
@@ -13,16 +13,14 @@ pub struct SegmentedReader {
     chunk_index: usize,
     offset: usize,
     pub consumed: usize,
+    remaining: usize,
 }
 
 impl SegmentedReader {
     pub fn new(chunks: impl IntoIterator<Item = Vec<u8>>) -> Self {
-        SegmentedReader {
-            chunks: chunks.into_iter().collect(),
-            chunk_index: 0,
-            offset: 0,
-            consumed: 0,
-        }
+        let chunks: Vec<_> = chunks.into_iter().collect();
+        let remaining = chunks.iter().fold(0usize, |total, chunk| total.saturating_add(chunk.len()));
+        SegmentedReader { chunks, remaining, chunk_index: 0, offset: 0, consumed: 0 }
     }
 
     pub fn byte(&mut self) -> Result<u8> {
@@ -36,13 +34,26 @@ impl SegmentedReader {
         let value = self.chunks[self.chunk_index][self.offset];
         self.offset += 1;
         self.consumed += 1;
+        self.remaining -= 1;
         Ok(value)
     }
 
     pub fn take(&mut self, size: usize) -> Result<Vec<u8>> {
+        if size > self.remaining {
+            return Err(ProtocolError::new("truncated segmented read"));
+        }
         let mut out = Vec::with_capacity(size);
-        for _ in 0..size {
-            out.push(self.byte()?);
+        while out.len() < size {
+            let chunk = &self.chunks[self.chunk_index];
+            let take = (size - out.len()).min(chunk.len() - self.offset);
+            out.extend_from_slice(&chunk[self.offset..self.offset + take]);
+            self.offset += take;
+            self.consumed += take;
+            self.remaining -= take;
+            if self.offset == chunk.len() {
+                self.chunk_index += 1;
+                self.offset = 0;
+            }
         }
         Ok(out)
     }
@@ -55,9 +66,7 @@ impl SegmentedReader {
         if tag == 0 {
             loop {
                 tag = self.byte()?;
-                if tag == 23 {
-                    break;
-                }
+                if tag == 23 { break; }
                 skipped.push(tag);
             }
         }
@@ -86,5 +95,16 @@ mod tests {
     fn truncated_zero_tag_rejected() {
         let mut r = SegmentedReader::new(vec![vec![0x00], vec![0x11]]);
         assert!(r.sync_tag().is_err());
+    }
+
+    #[test]
+    fn oversized_take_is_rejected_without_consuming_or_allocating() {
+        let mut r = SegmentedReader::new([vec![], b"ab".to_vec(), vec![], b"cd".to_vec()]);
+        assert!(r.take(usize::MAX).is_err());
+        assert_eq!(r.consumed, 0);
+        assert_eq!(r.take(3).unwrap(), b"abc");
+        assert_eq!(r.take(1).unwrap(), b"d");
+        assert!(r.take(1).is_err());
+        assert!(r.take(0).unwrap().is_empty());
     }
 }

@@ -1,19 +1,15 @@
 # Status
 
-`mt5_native` is a byte-in / byte-out codec for the MetaTrader 5 application
-wire protocol (revision 3). It has no socket, no connection and no order-send
-path: `LIVE_ENABLED` is `false`, and `ensure_live_allowed()` fails unless the
-crate is deliberately built with `--features live`. Every test here is a
-statement about bytes, checked offline against recorded conformance vectors.
+`mt5_native` is a networking-free codec for a reconstructed MT5 application
+protocol. Synthetic revision-3 fixtures cover byte-level behaviour, not
+successful broker sessions. The `live` feature is disabled by default.
 
-Networking lives in `mt5-session`, which depends on this crate and is itself
-off unless its `live` feature is on.
+`mt5-session` supplies optional TCP transport and a caller-owned local
+`LoginIdResolver` interface. Modern additional-login mappings for records 28
+and 35 remain unimplemented. The default resolver fails explicitly; there is
+no remote-service fallback or fabricated result.
 
-## Where it stands
-
-1. Connect and stay connected — done.
-2. Authenticate (MD5 challenge/response) — done against a demo server.
-3. The derived values the server asks for after login (tags 28 and 35) — open.
-   This is the part where help is most welcome; see `mt5-session`.
-
-Nothing here should be pointed at a real-money account.
+Earlier development notes reported a demo password-authentication exchange.
+This review did not reproduce that exchange and does not establish complete
+synchronization, trading or multi-broker compatibility. See [AUTH.md](AUTH.md)
+and the workspace [review](../REVIEW.md).

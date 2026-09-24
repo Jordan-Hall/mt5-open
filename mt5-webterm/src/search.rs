@@ -1,16 +1,24 @@
-//! Resolve MT5 server names to web-terminal hosts (always port 443).
+//! Resolve MT5 server names through the MetaQuotes HTTPS directory.
+//!
+//! Published desktop access points are normalized to port 443 for WebTerminal
+//! probes. Discovery alone does not prove that an endpoint supports WebTerminal
+//! or that its certificate is valid for that hostname.
 
 use md5::{Digest, Md5};
 use serde_json::Value;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::collections::HashSet;
+use std::net::IpAddr;
+use std::sync::OnceLock;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-const HMAC_KEY: [u8; 32] = [
+const SIGNATURE_KEY: [u8; 32] = [
     61, 123, 21, 22, 214, 234, 187, 52, 217, 214, 99, 227, 98, 62, 27, 215, 251, 220, 174, 244, 87,
     59, 223, 53, 127, 168, 207, 11, 190, 173, 146, 127,
 ];
-const SEARCH_URL: &str = "http://search.mtapi.io/Search";
-const SEARCHMQ_URL: &str = "https://updates.metaquotes.net/public/mt5/network";
+const DIRECTORY_URL: &str = "https://updates.metaquotes.net/public/mt5/network";
 const WEB_PORT: u16 = 443;
+const MAX_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
+static HTTP: OnceLock<Result<reqwest::Client, String>> = OnceLock::new();
 
 #[derive(Debug, Clone)]
 pub struct ServerHit {
@@ -18,93 +26,149 @@ pub struct ServerHit {
     pub access: Vec<String>,
 }
 
+fn http_client() -> Result<&'static reqwest::Client, String> {
+    HTTP.get_or_init(|| {
+        reqwest::Client::builder()
+            .https_only(true)
+            .redirect(reqwest::redirect::Policy::none())
+            .connect_timeout(Duration::from_secs(5))
+            .timeout(Duration::from_secs(12))
+            .build()
+            .map_err(|e| format!("directory client: {e}"))
+    })
+    .as_ref()
+    .map_err(Clone::clone)
+}
+
+/// Parse a hostname/IP and optional port, without accepting URLs, userinfo,
+/// paths, queries, or fragments. IPv6 hosts are returned in brackets.
+pub(crate) fn parse_endpoint(endpoint: &str) -> Result<(String, u16), String> {
+    if endpoint.is_empty()
+        || endpoint.chars().any(char::is_whitespace)
+        || endpoint.contains(['/', '\\', '@', '?', '#'])
+    {
+        return Err("invalid access endpoint".into());
+    }
+    if let Ok(ip) = endpoint.parse::<IpAddr>() {
+        return Ok((match ip {
+            IpAddr::V4(ip) => ip.to_string(),
+            IpAddr::V6(ip) => format!("[{ip}]"),
+        }, WEB_PORT));
+    }
+    let parsed = url::Url::parse(&format!("https://{endpoint}"))
+        .map_err(|_| "invalid access endpoint".to_string())?;
+    let host = parsed.host_str().ok_or("missing access hostname")?;
+    let port = parsed.port_or_known_default().ok_or("missing access port")?;
+    if host.is_empty() || port == 0 || endpoint.ends_with(':') {
+        return Err("invalid access endpoint".into());
+    }
+    Ok((host.to_string(), port))
+}
+
 pub fn pick_web_terminal(access: &[String]) -> Result<String, String> {
-    let mut parsed = Vec::new();
+    let mut first = None;
     for item in access {
-        if let Some((host, port_s)) = item.rsplit_once(':') {
-            if let Ok(port) = port_s.parse::<u16>() {
-                if !host.is_empty() {
-                    parsed.push((host.to_string(), port));
-                }
-            }
-        } else if !item.is_empty() {
-            parsed.push((item.clone(), WEB_PORT));
+        let Ok((host, port)) = parse_endpoint(item) else { continue };
+        let endpoint = format!("{host}:{WEB_PORT}");
+        if port == WEB_PORT {
+            return Ok(endpoint);
+        }
+        if first.is_none() {
+            first = Some(endpoint);
         }
     }
-    if let Some((host, _)) = parsed.iter().find(|(_, p)| *p == WEB_PORT) {
-        return Ok(format!("{host}:{WEB_PORT}"));
-    }
-    if let Some((host, _)) = parsed.first() {
-        return Ok(format!("{host}:{WEB_PORT}"));
-    }
-    Err("no access endpoints".into())
+    first.ok_or_else(|| "no valid access endpoints".into())
 }
 
 fn signature(body: &str) -> String {
-    let mut h = Md5::new();
-    h.update(body.as_bytes());
-    let body_hash = h.finalize();
-    let mut h2 = Md5::new();
-    h2.update(body_hash);
-    h2.update(HMAC_KEY);
-    format!("{:x}", h2.finalize())
+    let body_hash = Md5::digest(body.as_bytes());
+    let mut hash = Md5::new();
+    hash.update(body_hash);
+    hash.update(SIGNATURE_KEY);
+    format!("{:x}", hash.finalize())
+}
+
+fn request_body(company: &str) -> String {
+    let body = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("company", company)
+        .append_pair("code", "mt5")
+        .finish();
+    format!("{body}&signature={}&ver=2", signature(&body))
 }
 
 fn cookie() -> String {
-    let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-    let val = ((timestamp.saturating_sub(1_420_070_400)) as u64) | 0x4200_0000_0000_0000;
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let val = timestamp.saturating_sub(1_420_070_400) | 0x4200_0000_0000_0000;
     format!("_fz_uniq={val};uniq={val};age={};tid=0", timestamp.saturating_sub(86400))
 }
 
-pub async fn search_company(company: &str) -> Vec<Value> {
-    let url = format!("{SEARCH_URL}?company={}&mt5=true", urlencoding_lite(company));
-    let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(12)).build();
-    let Ok(client) = client else { return vec![] };
-    let Ok(resp) = client.get(url).send().await else { return vec![] };
-    let Ok(v) = resp.json::<Value>().await else { return vec![] };
-    match v {
-        Value::Array(a) => a,
-        Value::Object(map) => map.get("result").or(map.get("results")).cloned().and_then(|x| x.as_array().cloned()).unwrap_or_default(),
-        _ => vec![],
+fn parse_directory_response(body: &[u8]) -> Result<Vec<Value>, String> {
+    if body.len() > MAX_RESPONSE_BYTES {
+        return Err("directory response exceeds size limit".into());
+    }
+    let start = body.iter().position(|&b| b == b'{').ok_or("directory response is not JSON")?;
+    let mut value: Value = serde_json::from_slice(&body[start..])
+        .map_err(|e| format!("invalid directory response: {e}"))?;
+    match value.get_mut("result").map(Value::take) {
+        Some(Value::Array(results)) => Ok(results),
+        _ => Err("directory response has no result array".into()),
     }
 }
 
-pub async fn search_mq(company: &str) -> Vec<Value> {
-    let body = format!("company={company}&code=mt5");
-    let full = format!("{body}&signature={}&ver=2", signature(&body));
-    let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(12)).build();
-    let Ok(client) = client else { return vec![] };
-    let Ok(resp) = client
-        .post(SEARCHMQ_URL)
+/// Search the official directory, preserving HTTP, transport and decoding errors.
+pub async fn try_search_mq(company: &str) -> Result<Vec<Value>, String> {
+    if company.trim().is_empty() || company.len() > 1024 || company.contains('\0') {
+        return Err("company must contain 1..=1024 bytes without NUL".into());
+    }
+    let mut response = http_client()?
+        .post(DIRECTORY_URL)
         .header("Content-Type", "application/x-www-form-urlencoded")
         .header("User-Agent", "MetaTrader 5 Terminal/5.5830 (Windows NT 10.0.22621; x64)")
         .header("Cookie", cookie())
-        .body(full)
+        .body(request_body(company))
         .send()
         .await
-    else {
-        return vec![];
-    };
-    let Ok(text) = resp.text().await else { return vec![] };
-    let Some(idx) = text.find('{') else { return vec![] };
-    let Ok(v) = serde_json::from_str::<Value>(&text[idx..]) else { return vec![] };
-    v.get("result").and_then(|x| x.as_array()).cloned().unwrap_or_default()
+        .map_err(|e| format!("directory request: {e}"))?
+        .error_for_status()
+        .map_err(|e| format!("directory HTTP status: {e}"))?;
+    if response.content_length().is_some_and(|n| n > MAX_RESPONSE_BYTES as u64) {
+        return Err("directory response exceeds size limit".into());
+    }
+    let mut body = Vec::with_capacity(4096);
+    while let Some(chunk) = response.chunk().await.map_err(|e| format!("directory body: {e}"))? {
+        if chunk.len() > MAX_RESPONSE_BYTES - body.len() {
+            return Err("directory response exceeds size limit".into());
+        }
+        body.extend_from_slice(&chunk);
+    }
+    parse_directory_response(&body)
+}
+
+/// Compatibility helper. Prefer `try_search_mq` when callers need diagnostics.
+pub async fn search_mq(company: &str) -> Vec<Value> {
+    try_search_mq(company).await.unwrap_or_default()
+}
+
+/// Compatibility alias using the same official directory and no fallback service.
+pub async fn search_company(company: &str) -> Vec<Value> {
+    search_mq(company).await
 }
 
 fn hits_named(payload: &[Value], server_name: &str) -> Vec<ServerHit> {
     let target = server_name.to_lowercase();
     let mut out = Vec::new();
     for company in payload {
-        let Some(results) = company.get("results").and_then(|x| x.as_array()) else { continue };
+        let Some(results) = company.get("results").and_then(Value::as_array) else { continue };
         for result in results {
-            let name = result.get("name").and_then(|x| x.as_str()).unwrap_or("");
+            let Some(name) = result.get("name").and_then(Value::as_str) else { continue };
             if name.to_lowercase() != target {
                 continue;
             }
-            let access = result
-                .get("access")
-                .and_then(|x| x.as_array())
-                .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+            let access = result.get("access").and_then(Value::as_array)
+                .map(|items| items.iter().filter_map(Value::as_str).map(str::to_owned).collect())
                 .unwrap_or_default();
             out.push(ServerHit { name: name.to_string(), access });
         }
@@ -112,73 +176,52 @@ fn hits_named(payload: &[Value], server_name: &str) -> Vec<ServerHit> {
     out
 }
 
-pub async fn find_web_terminal(server_name: &str) -> Result<(String, u16), String> {
-    let mq = search_mq(server_name).await;
-    let mut hits = hits_named(&mq, server_name);
+async fn find_access(server_name: &str) -> Result<Vec<String>, String> {
+    let hits = hits_named(&try_search_mq(server_name).await?, server_name);
     if hits.is_empty() {
-        hits = hits_named(&search_company(server_name).await, server_name);
+        return Err(format!("server not found: {server_name}"));
     }
-    let access = hits.first().map(|h| h.access.clone()).ok_or_else(|| format!("server not found: {server_name}"))?;
-    let endpoint = pick_web_terminal(&access)?;
-    let (host, port_s) = endpoint.rsplit_once(':').ok_or("bad endpoint")?;
-    Ok((host.to_string(), port_s.parse().unwrap_or(WEB_PORT)))
+    Ok(hits.into_iter().flat_map(|hit| hit.access).collect())
 }
 
-/// Every endpoint the broker publishes for this server, in the order given.
-///
-/// `find_web_terminal` commits to the first one. When a login is refused it
-/// matters whether that host alone is refusing us or all of them are, and
-/// that question cannot be asked without the full list.
+pub async fn find_web_terminal(server_name: &str) -> Result<(String, u16), String> {
+    parse_endpoint(&pick_web_terminal(&find_access(server_name).await?)?)
+}
+
+/// Unique normalized WebTerminal candidates in their published order.
 pub async fn access_points(server_name: &str) -> Result<Vec<String>, String> {
-    let mq = search_mq(server_name).await;
-    let mut hits = hits_named(&mq, server_name);
-    if hits.is_empty() {
-        hits = hits_named(&search_company(server_name).await, server_name);
-    }
-    let access = hits.first().map(|h| h.access.clone()).ok_or_else(|| format!("server not found: {server_name}"))?;
+    let mut seen = HashSet::new();
     let mut out = Vec::new();
-    for item in access {
-        let ep = match item.rsplit_once(':') {
-            Some((host, port)) if port.parse::<u16>().is_ok() && !host.is_empty() => format!("{host}:{WEB_PORT}"),
-            _ if !item.is_empty() => format!("{item}:{WEB_PORT}"),
-            _ => continue,
-        };
-        if !out.contains(&ep) {
-            out.push(ep);
+    for item in find_access(server_name).await? {
+        let Ok((host, _)) = parse_endpoint(&item) else { continue };
+        let endpoint = format!("{host}:{WEB_PORT}");
+        if seen.insert(endpoint.clone()) {
+            out.push(endpoint);
         }
+    }
+    if out.is_empty() {
+        return Err("no valid access endpoints".into());
     }
     Ok(out)
 }
 
-/// Every server name MetaQuotes lists for a broker, so the app can offer a
-/// list instead of asking someone to type "ExampleBroker-Demo" exactly right.
-///
-/// One wrong character in a server name is indistinguishable from a wrong
-/// password: the login is simply refused. Typing it should not be part of
-/// signing in.
+/// Sorted unique server names from one official-directory request.
 pub async fn list_servers(company: &str) -> Result<Vec<String>, String> {
-    let mut names = Vec::new();
-    for payload in [search_mq(company).await, search_company(company).await] {
-        for entry in &payload {
-            let Some(results) = entry.get("results").and_then(|x| x.as_array()) else { continue };
-            for result in results {
-                if let Some(name) = result.get("name").and_then(|x| x.as_str()) {
-                    if !name.is_empty() && !names.iter().any(|n: &String| n == name) {
-                        names.push(name.to_string());
-                    }
-                }
+    let mut names = HashSet::new();
+    for entry in try_search_mq(company).await? {
+        let Some(results) = entry.get("results").and_then(Value::as_array) else { continue };
+        for result in results {
+            if let Some(name) = result.get("name").and_then(Value::as_str).filter(|s| !s.is_empty()) {
+                names.insert(name.to_string());
             }
         }
     }
-    names.sort();
     if names.is_empty() {
         return Err(format!("no servers found for {company}"));
     }
+    let mut names: Vec<_> = names.into_iter().collect();
+    names.sort_unstable();
     Ok(names)
-}
-
-fn urlencoding_lite(s: &str) -> String {
-    url::form_urlencoded::byte_serialize(s.as_bytes()).collect()
 }
 
 #[cfg(test)]
@@ -187,16 +230,57 @@ mod tests {
 
     #[test]
     fn prefers_443() {
-        let access = vec![
-            "acc.example:701".into(),
-            "edge.example:443".into(),
-        ];
-        assert_eq!(pick_web_terminal(&access).unwrap(), "edge.example:443");
+        assert_eq!(pick_web_terminal(&["acc.example:701".into(), "edge.example:443".into()]).unwrap(), "edge.example:443");
     }
 
     #[test]
     fn rewrites_desktop_port() {
-        let access = vec!["acc.example:701".into(), "acc.example:702".into()];
-        assert_eq!(pick_web_terminal(&access).unwrap(), "acc.example:443");
+        assert_eq!(pick_web_terminal(&["acc.example:701".into(), "acc.example:702".into()]).unwrap(), "acc.example:443");
+    }
+
+    #[test]
+    fn ipv6_and_bare_hosts_are_supported() {
+        for (input, expected) in [
+            ("example.test", "example.test:443"),
+            ("127.0.0.1:701", "127.0.0.1:443"),
+            ("[2001:db8::1]:701", "[2001:db8::1]:443"),
+            ("2001:db8::1", "[2001:db8::1]:443"),
+        ] {
+            assert_eq!(pick_web_terminal(&[input.into()]).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn rejects_urls_userinfo_and_invalid_ports() {
+        for input in ["", "host:0", "host:65536", "host:abc", "host:", " user", "https://host", "u@host", "host/path", "host?x", "host#x", "host\\path"] {
+            assert!(parse_endpoint(input).is_err(), "accepted {input:?}");
+        }
+    }
+
+    #[test]
+    fn form_encoding_cannot_inject_parameters() {
+        let body = request_body("A&B + Partners=Demo");
+        let pairs: Vec<_> = url::form_urlencoded::parse(body.as_bytes()).collect();
+        assert_eq!(pairs.len(), 4);
+        assert_eq!(pairs[0].0, "company");
+        assert_eq!(pairs[0].1, "A&B + Partners=Demo");
+        let unsigned = body.split("&signature=").next().unwrap();
+        assert_eq!(pairs[2].1, signature(unsigned));
+    }
+
+    #[test]
+    fn directory_decoding_rejects_bad_shapes() {
+        assert!(parse_directory_response(b"garbage").is_err());
+        assert!(parse_directory_response(b"{}").is_err());
+        assert!(parse_directory_response(b"{\"result\":null}").is_err());
+        assert!(parse_directory_response(b"prefix{\"result\":[]}").unwrap().is_empty());
+        assert!(parse_directory_response(&vec![b' '; MAX_RESPONSE_BYTES + 1]).is_err());
+    }
+
+    #[test]
+    fn directory_transport_is_https_only() {
+        let url = url::Url::parse(DIRECTORY_URL).unwrap();
+        assert_eq!(url.scheme(), "https");
+        assert_eq!(url.host_str(), Some("updates.metaquotes.net"));
     }
 }

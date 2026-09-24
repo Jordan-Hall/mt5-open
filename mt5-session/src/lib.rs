@@ -6,10 +6,9 @@
 //! the encoder agrees with a recording, not that a server accepts what it
 //! builds. Those are different claims and only one of them has been tested.
 //!
-//! **Connect and authenticate only.** There is no order path here and no way
-//! to reach one from here: nothing in this crate builds, signs or sends a
-//! trade, and the codec's execution modules are not used. Placing an order
-//! over this socket is a later stage with its own gate.
+//! The typed API covers authentication and account synchronization. It has no
+//! trade builder or automatic order retry; the public raw-frame API remains a
+//! low-level escape hatch whose contents are the caller's responsibility.
 //!
 //! The socket is blocking on purpose. An engine wants this on a thread of its
 //! own anyway, and a blocking read with a timeout is easier to be sure about
@@ -18,11 +17,9 @@
 #![cfg(feature = "live")]
 
 use std::collections::VecDeque;
-use std::collections::hash_map::RandomState;
-use std::hash::{BuildHasher, Hasher};
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use mt5_native::account::{AccountState, parse_account_update_19};
 use mt5_native::auth::AuthSummary;
@@ -33,7 +30,8 @@ use mt5_native::handshake::{Handshake, Phase};
 use mt5_native::login::{LoginValues, login_value_wrapper};
 
 pub mod loginid;
-pub use loginid::LoginIdService;
+pub use loginid::{LoginIdResolver, UnsupportedLoginResolver};
+use rand::RngCore;
 
 /// How long one read waits before giving up on a quiet server.
 const READ_TIMEOUT: Duration = Duration::from_secs(20);
@@ -46,23 +44,11 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 /// trusted.
 const MAX_PAYLOAD: usize = 4 * 1024 * 1024;
 
-/// Operating-system entropy, without taking a dependency for it.
-///
-/// `RandomState` is seeded per process from the OS and is what the standard
-/// library trusts to keep hash maps from being collided on purpose. The
-/// handshake needs a client challenge and two nonces; this is enough for that
-/// and is not offered for anything else.
-fn entropy() -> u64 {
-    let mut h = RandomState::new().build_hasher();
-    h.write_u64(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(0));
-    h.finish()
-}
-
-fn entropy_16() -> [u8; 16] {
+fn entropy_16() -> Result<[u8; 16]> {
     let mut out = [0u8; 16];
-    out[..8].copy_from_slice(&entropy().to_le_bytes());
-    out[8..].copy_from_slice(&entropy().to_le_bytes());
-    out
+    rand::rngs::OsRng.try_fill_bytes(&mut out)
+        .map_err(|_| ProtocolError::new("operating-system randomness unavailable"))?;
+    Ok(out)
 }
 
 /// A connected, framed link to an access server.
@@ -76,6 +62,7 @@ pub struct Session {
     /// required. Carries no credentials out of it: only `AuthSummary` is
     /// exposed, and that holds tag numbers and lengths, never values.
     handshake: Option<Handshake>,
+    auth_started: bool,
     /// Kept from `authenticate` because the loginid wrapper needs them and they
     /// are not otherwise recoverable from the handshake.
     login: u64,
@@ -100,8 +87,10 @@ impl Session {
         socket
             .set_read_timeout(Some(READ_TIMEOUT))
             .map_err(|e| ProtocolError::new(format!("read timeout: {e}")))?;
-        // Handshake frames are small; latency matters more than packing them.
-        let _ = socket.set_nodelay(true);
+        socket.set_write_timeout(Some(READ_TIMEOUT))
+            .map_err(|e| ProtocolError::new(format!("write timeout: {e}")))?;
+        socket.set_nodelay(true)
+            .map_err(|e| ProtocolError::new(format!("TCP_NODELAY: {e}")))?;
         Ok(Session {
             socket,
             parser: FrameParser::new(MAX_PAYLOAD),
@@ -109,6 +98,7 @@ impl Session {
             buffer: vec![0u8; 16 * 1024],
             sequence: 1,
             handshake: None,
+            auth_started: false,
             login: 0,
             client_build: 0,
             rx: None,
@@ -122,6 +112,9 @@ impl Session {
     ///
     /// Returns `(command, decoded_payload)`.
     fn next_session_frame(&mut self) -> Result<(u8, Vec<u8>)> {
+        if self.rx.is_none() {
+            return Err(ProtocolError::new("no receive keystream; synchronize first"));
+        }
         let frame = self.next_frame()?;
         let rx = self
             .rx
@@ -175,10 +168,17 @@ impl Session {
     /// not a message, and treating it as one is how a parser starts inventing
     /// fields it never received.
     pub fn next_frame(&mut self) -> Result<Frame> {
+        let deadline = Instant::now() + READ_TIMEOUT;
         loop {
             if let Some(frame) = self.pending.pop_front() {
                 return Ok(frame);
             }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(ProtocolError::new("frame read deadline exceeded"));
+            }
+            self.socket.set_read_timeout(Some(remaining))
+                .map_err(|e| ProtocolError::new(format!("read timeout: {e}")))?;
             let read = self
                 .socket
                 .read(&mut self.buffer)
@@ -199,12 +199,18 @@ impl Session {
     /// knowing that early is the difference between a clear refusal and a
     /// malformed order.
     pub fn authenticate(&mut self, login: u64, password: &str, client_build: u16) -> Result<i16> {
+        if self.auth_started {
+            return Err(ProtocolError::new("authentication already attempted; create a fresh connection"));
+        }
+        self.auth_started = true;
+        self.rx = None;
         self.login = login;
         self.client_build = client_build;
         let mut hs = Handshake::new(login, password, client_build);
 
         let seq = self.next_sequence();
-        let hello = hs.hello((entropy() & 0xff) as u8, entropy() as u32, seq)?;
+        let random = entropy_16()?;
+        let hello = hs.hello(random[0], u32::from_le_bytes(random[1..5].try_into().unwrap()), seq)?;
         self.send(&hello)?;
 
         // Before any session key exists, both directions use the startup
@@ -213,16 +219,23 @@ impl Session {
         // `on_auth_result` both take plaintext. The transform resets its
         // feedback per message, so each payload decodes independently.
         let challenge = self.next_frame()?;
+        if challenge.command != mt5_native::frame::command::HELLO || !challenge.is_final() || challenge.is_compressed() {
+            return Err(ProtocolError::new("invalid challenge frame"));
+        }
         hs.on_challenge(&startup_decrypt_default(&challenge.payload))?;
 
         let seq = self.next_sequence();
-        let auth = hs.auth(&entropy_16(), entropy() as u16, None, seq)?;
+        let random = entropy_16()?;
+        let auth = hs.auth(&entropy_16()?, u16::from_le_bytes([random[0], random[1]]), None, seq)?;
         self.send(&auth)?;
 
         let result = self.next_frame()?;
+        if result.command != mt5_native::frame::command::AUTH || !result.is_final() || result.is_compressed() {
+            return Err(ProtocolError::new("invalid authentication-result frame"));
+        }
         hs.on_auth_result(&startup_decrypt_default(&result.payload))?;
 
-        // Kept whatever the outcome: a rejection is worth inspecting too.
+        // Retain successful and certificate-required authentication state.
         let phase = hs.phase();
         let build = hs.server_build();
         self.handshake = Some(hs);
@@ -237,17 +250,9 @@ impl Session {
             other => Err(ProtocolError::new(format!("authentication ended in {other:?}"))),
         }
     }
-    /// Resolve the command-12 login values via the loginid service.
-    ///
-    /// This is the step the terminal itself cannot do without a service: the
-    /// tag-28 and tag-35 blobs the server returned in the auth result are POSTed
-    /// to the configured service, which returns the two integers, and the
-    /// documented wrapper folds them (with the server challenge and builds) into
-    /// the login ids. Nothing here computes what the service computes.
-    ///
-    /// Errors if the server did not send both input tags -- in which case the
-    /// service is not the missing piece and something earlier is wrong.
-    pub fn resolve_login_values(&self, service: &LoginIdService) -> Result<LoginValues> {
+    /// Resolve command-12 inputs locally. Unsupported algorithms must return
+    /// an error; this crate has no remote calculation fallback.
+    pub fn resolve_login_values(&self, resolver: &(impl LoginIdResolver + ?Sized)) -> Result<LoginValues> {
         let hs = self.handshake.as_ref().ok_or_else(|| ProtocolError::new("not authenticated"))?;
         let result = hs
             .authentication_result()
@@ -256,17 +261,17 @@ impl Session {
             result
                 .tlvs
                 .iter()
-                .find(|(k, _)| *k == t)
+                .rev().find(|(k, _)| *k == t)
                 .map(|(_, v)| v.as_slice())
                 .ok_or_else(|| ProtocolError::new(format!("auth result carried no tag {t}")))
         };
         let tag28 = tag(28)?;
         let tag35 = tag(35)?;
         let server_build = hs.server_build().ok_or_else(|| ProtocolError::new("no server build"))? as i32;
-        let challenge = *hs.certificate_challenge()?;
+        let challenge = *hs.authentication_challenge()?;
 
-        let f28 = service.resolve_tag(28, tag28, server_build)?;
-        let f35 = service.resolve_tag(35, tag35, server_build)?;
+        let f28 = resolver.resolve_tag(28, tag28, server_build)?;
+        let f35 = resolver.resolve_tag(35, tag35, server_build)?;
 
         Ok(login_value_wrapper(
             self.login,
@@ -282,8 +287,8 @@ impl Session {
     ///
     /// Returns the command-12 status and the decoded account-state stream. Still
     /// no order path -- the reply is account state, which is a read.
-    pub fn synchronize_via_service(&mut self, service: &LoginIdService) -> Result<(i32, Vec<u8>)> {
-        let values = self.resolve_login_values(service)?;
+    pub fn synchronize_with_resolver(&mut self, resolver: &(impl LoginIdResolver + ?Sized)) -> Result<(i32, Vec<u8>)> {
+        let values = self.resolve_login_values(resolver)?;
         self.synchronize(&values)
     }
 
@@ -302,9 +307,8 @@ impl Session {
     ///
     /// This is the gate to `READY`, and everything worth having -- balance,
     /// symbols, quotes, orders -- lives past it. The request carries login
-    /// values derived from the tag-28/tag-35 material; the specification
-    /// declines to say whether a server accepts zeros there, so the only way
-    /// to find out is to ask one.
+    /// values derived from the tag-28/tag-35 material. The caller is responsible
+    /// for obtaining verified values; this low-level API does not synthesize them.
     ///
     /// Returns the response status and the decoded stream. Still no order: the
     /// reply is account state, which is read.
@@ -340,14 +344,24 @@ impl Session {
         // (account updates, quotes) stay aligned rather than desyncing.
         let mut rx = SessionCipher::new(&key)?;
         let mut stream = Vec::new();
-        loop {
+        let mut complete = false;
+        for _ in 0..1024 {
             let reply = self.next_frame()?;
+            if reply.command != mt5_native::frame::command::ACCOUNT_STATE || reply.is_compressed() {
+                return Err(ProtocolError::new("unsupported synchronization frame"));
+            }
+            if reply.payload.len() > MAX_PAYLOAD.saturating_sub(stream.len()) {
+                return Err(ProtocolError::new("synchronization message exceeds size limit"));
+            }
             stream.extend_from_slice(&rx.decrypt(&reply.payload));
             if reply.is_final() {
+                complete = true;
                 break;
             }
         }
-        self.rx = Some(rx);
+        if !complete {
+            return Err(ProtocolError::new("synchronization fragment limit exceeded"));
+        }
         if stream.len() < 4 {
             return Err(ProtocolError::new(format!(
                 "synchronization reply was {} bytes, too short for a status",
@@ -355,6 +369,10 @@ impl Session {
             )));
         }
         let status = i32::from_le_bytes([stream[0], stream[1], stream[2], stream[3]]);
+        if status != 0 {
+            return Err(ProtocolError::new(format!("synchronization rejected with status {status}")));
+        }
+        self.rx = Some(rx);
         Ok((status, stream))
     }
 

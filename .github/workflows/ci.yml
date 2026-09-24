@@ -1,0 +1,34 @@
+name: Rust CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal --component clippy
+      - name: Test default features
+        run: cargo +stable test --workspace --locked
+      - name: Test all crates and features
+        run: cargo +stable test --workspace --all-features --locked
+      - name: Clippy
+        run: cargo +stable clippy --workspace --all-targets --all-features --locked
+      - name: Measure codec CPU paths
+        run: |
+          cargo +stable run --release -p mt5_native --example bitpack_bench --locked
+          cargo +stable run --release -p mt5_webterm --example quote_bench --locked
