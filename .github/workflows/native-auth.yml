@@ -1,0 +1,32 @@
+name: Native authentication
+
+on:
+  push:
+    branches: [fix/direct-native-auth]
+  pull_request:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Export reviewed source
+        run: git archive --format=tar HEAD -o source.tar
+      - uses: actions/upload-artifact@v4
+        with:
+          name: source
+          path: source.tar
+          retention-days: 7
+      - name: Select Rust
+        run: rustup update stable --profile minimal && rustup default stable
+      - name: Offline codec unit tests
+        run: cargo test --locked -p mt5_native --lib
+      - name: Session loopback tests
+        run: cargo test --locked -p mt5_session --features live
