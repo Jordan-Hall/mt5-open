@@ -407,8 +407,9 @@ fn short_comment(comment: &str) -> String {
 }
 
 /// The seconds window that holds the last `count` candles of `tf` ending at
-/// `before` (or now). Twice the span plus a weekend, so a closed market does
-/// not leave the chart short; callers keep only the last `count`.
+/// `before` (or now). Scrolling back asks for twice the span plus a weekend,
+/// so a closed market does not leave the chart short; callers keep only the
+/// last `count`.
 fn rates_window(tf: &str, count: usize, before: Option<i64>, now: i64) -> (i64, i64) {
     let sec: i64 = match tf {
         "M1" => 60,
@@ -420,8 +421,11 @@ fn rates_window(tf: &str, count: usize, before: Option<i64>, now: i64) -> (i64, 
         "D1" => 86400,
         _ => 300,
     };
-    let to = before.unwrap_or(now);
-    (to - (count as i64 + 10) * sec * 2 - 3 * 86400, to)
+    match before {
+        // The latest candles: the window charts have always loaded with.
+        None => (now - (count as i64 + 10) * sec, now),
+        Some(to) => (to - (count as i64 + 10) * sec * 2 - 3 * 86400, to),
+    }
 }
 
 /// Every ticket the account holds, orders and positions together.
@@ -456,7 +460,7 @@ mod tests {
         let (from, to) = rates_window("H1", 100, Some(before), now);
         assert_eq!(to, before, "the window ends where the chart's oldest candle is, not now");
         assert!(to - from >= 100 * 3600, "the window holds the candles asked for");
-        assert_eq!(rates_window("M5", 10, None, now).1, now);
+        assert_eq!(rates_window("M5", 10, None, now), (now - 20 * 300, now), "the latest candles use the usual window");
     }
 
     #[test]
