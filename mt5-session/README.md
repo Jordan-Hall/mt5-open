@@ -127,6 +127,13 @@ session. An observation window is not a guarantee of indefinite availability.
 
 ## Runtime behavior and limits
 
+The client sends a keepalive after 10 seconds without a send, and the broker
+answers it. On a closed market the answers arrived at most 20 seconds apart.
+After 45 seconds with nothing received (`RECEIVE_DEADLINE`) the client fails
+like any other broken connection, so a peer that vanished without closing
+the socket is noticed rather than polled forever. A reconnecting host must
+synchronize again and subscribe once; the desk adapter does both.
+
 Authentication runs once per connection. Account readiness requires validated
 synchronization and the requested login. TCP fragments survive idle polls;
 decryption precedes decompression. Malformed incoming application state requires

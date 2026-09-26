@@ -6,7 +6,7 @@ Rust clients and codecs for MetaTrader 5.
 |---|---|---|
 | `mt5-native` | Offline codecs for authentication, account records, quotes, history, depth and trade requests | Unit tests and protocol vectors |
 | `mt5-session` | Native TCP account state, quotes, history and trading | Three Vantage demo accounts and one read-only Live 10 account, client 6182/server 5830, with locally computed challenge answers |
-| `mt5-webterm` | Web-terminal sessions, quotes, history and trading | Existing demo-server support; broker lookup uses MetaQuotes' directory |
+| `mt5-webterm` | Web-terminal sessions, quotes, history and trading | Deal history, symbol specifications and server clock matched the native session on two demo accounts; broker lookup uses MetaQuotes' directory |
 
 The native session does not require a running terminal or an external calculation
 service. It requires a locally observed login profile. That profile matches both

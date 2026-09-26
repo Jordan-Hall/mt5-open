@@ -11,12 +11,12 @@ broker Manager API does not satisfy that target merely because it uses TCP.
 | Password, LoginId and synchronization | Three Vantage demo accounts and one real account on Live 10 passed simultaneous native synchronization and quotes; account and exact server identity checked | Other brokers/builds, compatibility metadata and additional authentication methods |
 | Account and symbols | Balance/credit/leverage comparison; account terms and 1,230 symbols parsed | Broader record versions; complete dynamic broker/group configuration |
 | Quotes | Native commands 50/51; EURUSD/XAUUSD/BTCUSD delivered through desk; conversion subscriptions and live reconnection through an advertised access point | Quote clearing, stale conversion rates and session transitions |
-| Bars | 17,242 M1 bars matched terminal fields; desk returned 200 M5 bars, with 199 closed bars matching and the forming bar changing between reads | Other inner compression modes; long-range gaps, DST transitions and other brokers |
+| Bars | 17,242 M1 bars matched terminal fields; desk returned 200 M5 bars, with 199 closed bars matching and the forming bar changing between reads; stock-CFD replies with in-session gaps now decode (33 live replies, eleven symbols, every container exact to its declared count and bit length); USDX M1 matched the web terminal on 2,666 bars | Other inner compression flags; long-range gaps, DST transitions and other brokers |
 | Order/deal history | 453 historical deals matched terminal fields; native order-history client added with completion-time filtering and corrected initial/remaining volumes | Older schemas, corrections and large history ranges |
 | Trading | Desk adapter passed pending/market/SLTP/partial/full close; SDK also passed all six pending types with specified expiry, buy/sell hedge and close-by at 24 terminal checkpoints, including an unequal hedge and close-by remainder | Netting, exchange flows, expiry execution and disconnect during submission |
 | Updates | Execution and position records separated; close-by additional execution and position arrays handled and live-verified | Reversed event ordering, other collection variants, corrections and reconnect mid-trade |
 | Margin and profit | Retail hedge methods and pending-order formulas implemented; broker margin matched at 24 demo checkpoints; larger-leg wire flag isolated using custom symbols | Nonzero hedged/pending margin and larger-leg broker comparisons; netting, exchange, floating tiers, spread discounts and component rounding need validation |
-| Recovery | Broker access-point discovery, DNS/multiple bootstrap endpoints, retained routes and bounded dial attempts; bootstrap removal test reauthenticated and resumed quotes | Fault tests with execution in flight, persistent routing cache and broader reconciliation |
+| Recovery | Broker access-point discovery, DNS/multiple bootstrap endpoints, retained routes and bounded dial attempts; bootstrap removal test reauthenticated and resumed quotes; 45 s receive deadline catches a silent peer; 31-minute soak through a fault proxy with two cuts and a blackhole: quotes resumed within 9 s of a cut and 50 s of a blackhole, one subscription per connection, no trade frames | Fault tests with execution in flight, persistent routing cache and broader reconciliation |
 | Additional authentication | Certificate and OTP codecs present | Socket integration, enrollment, passkeys and independent test accounts |
 | Tick history | Daily columns, hourly batches and recent packed ticks; public range API matched 140,601 terminal ticks in order, timestamps, flags and prices within 1e-12 | Live continuation status 14, nonzero exchange volumes and additional metadata encodings |
 | Depth | Subscription and ordered delta API; signed-magnitude volume corrected against a wire fixture; empty-book reset matched the terminal | Nonempty broker books, reset/merge semantics and exchange liquidity |
@@ -116,6 +116,37 @@ The shipped conformance corpus contains 1,280 synthetic reference cases. Profile
 identity is mandatory. Wrong login/server configuration is rejected, and a
 foreign account update invalidates the session. Local fake-broker tests check
 that no request follows an identity mismatch or read-only restriction.
+
+## Web terminal parity, stock-CFD bars and fault soak, 26 September
+
+One read-only web-terminal session and one native session per demo account
+were compared record by record. 485 web-terminal deals on two accounts
+matched native deal history on every field, including position id, magic,
+deal type and entry (in, out and out-by), with times on the server clock.
+Full web-terminal symbol records (command 18) matched native contract size,
+tick size and value, volume limits, currencies and trade modes for 13
+symbols with five contract sizes. Through the desk adapters, tick values in
+the account currency agreed to six decimals for eight symbols, including
+JPY-quoted pairs converted to GBP.
+
+USDX: native M1 history loaded (2,666 bars over three days) and matched the
+web terminal's candles exactly. On the weekend both transports returned the
+Friday-close quote (100.758/100.793, 23:59:59 server time); live streaming
+of USDX awaits an open market.
+
+Stock-CFD bar replies (DXC, DXYZ) failed with "bar run exceeds declared
+count". They carry an empty run before the skip over an in-session gap;
+skipping it decodes all 33 dumped replies exactly.
+
+A closed-market session showed keepalive answers at most 20 seconds apart;
+the client now fails after 45 seconds of silence. The desk adapter soaked
+for 31 minutes on a demo account through a local proxy that cut the
+connection at 300 s and 1200 s and blackholed it at 720 s: 2,789 crypto
+quotes, 124 of 124 snapshots, the quote stream open throughout, gaps of
+6.1 s and 8.7 s after the cuts and 50.2 s across the blackhole (45 s to
+detect it), one subscription per connection despite a resubscribe request
+every second, and no trade frame sent. No silence was reported outside the
+blackhole.
 
 ## Sources that help
 
