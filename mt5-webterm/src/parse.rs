@@ -1,4 +1,8 @@
 //! Account, symbol, quote, position, deal and candle decoders.
+//!
+//! Times in these records are the server's clock, as sent. The account frame
+//! carries the server's offset from UTC (`Account::timezone_shift_seconds`);
+//! [`crate::Session`] converts to UTC at its edge.
 
 use crate::protocol::{from_utf16_le, LOT_MULTIPLIER, ORDER_REC_SIZE, QUOTE_SIZE};
 use flate2::read::ZlibDecoder;
@@ -10,11 +14,15 @@ pub struct Account {
     pub login: u64,
     pub balance: f64,
     pub equity: f64,
-    pub margin: f64,
     pub currency: String,
     pub server: String,
     pub leverage: u16,
-    pub profit: f64,
+    /// Seconds the server clock runs ahead of UTC. Candles, deals and
+    /// positions carry server-clock times.
+    pub timezone_shift_seconds: i64,
+    /// Nonzero when the server applies a daylight-saving rule on top of the
+    /// shift. Not yet observed, so not interpreted.
+    pub daylight_mode: u8,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -23,12 +31,29 @@ pub struct Symbol {
     pub id: u32,
     pub digits: u32,
     pub point: f64,
+    /// As the server sends it, in the profit currency; zero for most
+    /// instruments, whose tick value follows from contract size and tick size.
     pub tick_size: f64,
     pub tick_value: f64,
     pub contract_size: f64,
     pub min_volume: f64,
     pub volume_step: f64,
     pub max_volume: f64,
+    /// MT5 calculation mode: 0 forex, 2 CFD, 4 CFD leverage, 5 forex no
+    /// leverage, and so on.
+    pub calc_mode: u32,
+    pub base_currency: String,
+    pub profit_currency: String,
+    pub margin_currency: String,
+    pub trade_mode: u32,
+    pub execution_mode: u32,
+    pub filling_flags: u32,
+    pub stops_level: u32,
+    pub freeze_level: u32,
+    /// True once the full specification (`CMD_SYMBOL_INFO`) has been read.
+    /// The symbol list alone carries only the name, digits, id and
+    /// calculation mode; every other trading field is zero until then.
+    pub full: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -55,6 +80,7 @@ pub struct Position {
     pub profit: f64,
     pub swap: f64,
     pub commission: f64,
+    /// Server clock.
     pub time: i64,
     pub comment: String,
 }
@@ -73,24 +99,43 @@ pub struct Order {
     pub time: i64,
 }
 
+/// Deal entry: how a deal changed its position.
+pub const ENTRY_IN: u32 = 0;
+pub const ENTRY_OUT: u32 = 1;
+pub const ENTRY_INOUT: u32 = 2;
+pub const ENTRY_OUT_BY: u32 = 3;
+
 #[derive(Debug, Clone, Default)]
 pub struct Deal {
     pub ticket: i64,
     pub order: i64,
+    /// The position this deal opened, changed or closed.
+    pub position: i64,
+    pub magic: i64,
     pub symbol: String,
-    pub side: u32,
+    /// MT5 deal type: 0 buy, 1 sell, 2 balance, 3 credit and so on.
+    pub kind: u32,
+    /// `ENTRY_IN`, `ENTRY_OUT`, `ENTRY_INOUT` or `ENTRY_OUT_BY`.
+    pub entry: u32,
     pub volume: f64,
+    /// Execution price.
     pub price: f64,
+    pub sl: f64,
+    pub tp: f64,
     pub profit: f64,
     pub commission: f64,
     pub swap: f64,
-    /// Seconds, as the server sends them.
+    pub contract_size: f64,
+    /// Seconds on the server clock.
     pub time: i64,
+    /// Milliseconds on the server clock.
+    pub time_ms: i64,
     pub comment: String,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct Candle {
+    /// Server clock.
     pub time: i64,
     pub open: f64,
     pub high: f64,
@@ -100,10 +145,10 @@ pub struct Candle {
 }
 
 pub fn parse_account(body: &[u8], login: u64, server: &str) -> Account {
-    // FL_SCHEMA: u8, i32, i32, f64, f64, w64, u32, u32, w256, u16, w128, ...
+    // u8, i32, i32, f64, f64, w32, u32, u32, w128, u16, w64, w128, i32, u8, ...
     let mut o = 0usize;
     let take = |o: &mut usize, n: usize| -> &[u8] {
-        let s = *o;
+        let s = (*o).min(body.len());
         *o = (*o + n).min(body.len());
         &body[s..*o]
     };
@@ -119,12 +164,12 @@ pub fn parse_account(body: &[u8], login: u64, server: &str) -> Account {
     let leverage = u16_at(take(&mut o, 2));
     let parsed_server = from_utf16_le(take(&mut o, 128));
     let _ = take(&mut o, 256);
-    let _ = take(&mut o, 4);
-    let _ = take(&mut o, 1);
-    let _ = take(&mut o, 4);
-    let _ = take(&mut o, 4);
-    let profit = f64_at(take(&mut o, 8));
-    let margin = f64_at(take(&mut o, 8));
+    // Matched the native session's server time zone (180 minutes) on every
+    // account checked. The two doubles further on were once read as profit
+    // and margin; they held 50 and 20 on every account whatever was open, so
+    // this frame does not carry the account's margin.
+    let timezone_shift_seconds = u32_at(take(&mut o, 4)) as i32 as i64;
+    let daylight_mode = take(&mut o, 1).first().copied().unwrap_or(0);
     if equity == 0.0 {
         equity = balance;
     }
@@ -132,11 +177,11 @@ pub fn parse_account(body: &[u8], login: u64, server: &str) -> Account {
         login,
         balance,
         equity,
-        margin,
         currency,
         server: if parsed_server.is_empty() { server.to_string() } else { parsed_server },
         leverage,
-        profit,
+        timezone_shift_seconds,
+        daylight_mode,
     }
 }
 
@@ -171,6 +216,10 @@ fn u64_at(b: &[u8]) -> u64 {
     u64::from_le_bytes(b[..8].try_into().unwrap())
 }
 
+/// Bytes in one symbol-list record: w32 name, w64 description, u32 digits,
+/// u32 id, w128 path, u32 calculation mode, 64 bytes, 2 bytes.
+pub const SYMBOL_LIST_REC_SIZE: usize = 526;
+
 pub fn parse_symbols(body: &[u8]) -> HashMap<String, Symbol> {
     let compressed = if body.len() > 4 { &body[4..] } else { return HashMap::new() };
     let mut raw = Vec::new();
@@ -180,48 +229,115 @@ pub fn parse_symbols(body: &[u8]) -> HashMap<String, Symbol> {
         let _ = dec.decompress(compressed, &mut out, flate2::FlushDecompress::Finish);
         raw = out;
     }
+    parse_symbol_list(&raw)
+}
+
+/// The decompressed symbol list: u32 count, then fixed-size records.
+pub fn parse_symbol_list(raw: &[u8]) -> HashMap<String, Symbol> {
     if raw.len() < 4 {
         return HashMap::new();
     }
-    let count = u32::from_le_bytes(raw[0..4].try_into().unwrap()) as usize;
-    let mut o = 4usize;
+    let count = u32_at(raw) as usize;
     let mut map = HashMap::new();
-    for _ in 0..count {
-        if o + 64 + 128 + 4 + 4 > raw.len() {
-            break;
-        }
-        let name = from_utf16_le(&raw[o..o + 64]);
-        o += 64;
-        o += 128;
-        let digits = u32_at(&raw[o..]);
-        o += 4;
-        let id = u32_at(&raw[o..]);
-        o += 4;
-        o += 256;
-        let _calc = u32_at(&raw[o..]);
-        o += 4;
-        o += 64;
-        o += 2;
+    for rec in raw[4..].chunks_exact(SYMBOL_LIST_REC_SIZE).take(count) {
+        let name = from_utf16_le(&rec[..64]);
         if name.is_empty() {
             continue;
         }
-        let point = if digits > 0 { 10f64.powi(-(digits as i32)) } else { 0.01 };
+        let digits = u32_at(&rec[192..]);
+        let point = if digits > 0 { 10f64.powi(-(digits as i32)) } else { 1.0 };
         map.insert(
             name.clone(),
             Symbol {
                 name,
-                id,
                 digits,
+                id: u32_at(&rec[196..]),
                 point,
-                tick_size: point,
-                volume_step: 0.01,
-                min_volume: 0.01,
-                max_volume: 100.0,
+                calc_mode: u32_at(&rec[456..]),
                 ..Default::default()
             },
         );
     }
     map
+}
+
+/// Bytes in one full symbol specification (`CMD_SYMBOL_INFO`).
+pub const SYMBOL_INFO_REC_SIZE: usize = 3068;
+
+/// Full specifications: u32 count, then one record per requested symbol id.
+/// Offsets were matched against the native session's symbol records for 13
+/// instruments with five different contract sizes; the order of neighbouring
+/// fields of equal value on that server (tick value before tick size, volume
+/// minimum, maximum then step) follows the web terminal's own schema.
+pub fn parse_symbol_info(body: &[u8]) -> Vec<Symbol> {
+    if body.len() < 4 {
+        return vec![];
+    }
+    let count = u32_at(body) as usize;
+    if count == 0 {
+        return vec![];
+    }
+    let records = body.len() - 4;
+    // A newer server may append fields: step by the record size the reply
+    // declares, never less than the fields read here.
+    let size = if records % count == 0 && records / count >= 1896 { records / count } else { SYMBOL_INFO_REC_SIZE };
+    body[4..]
+        .chunks_exact(size)
+        .take(count)
+        .filter_map(|r| {
+            let name = from_utf16_le(&r[..64]);
+            if name.is_empty() {
+                return None;
+            }
+            let lots = |at: usize| u64_at(&r[at..]) as f64 / LOT_MULTIPLIER;
+            Some(Symbol {
+                name,
+                id: u32_at(&r[1412..]),
+                digits: u32_at(&r[1392..]),
+                point: f64_at(&r[1396..]),
+                base_currency: from_utf16_le(&r[1276..1308]),
+                profit_currency: from_utf16_le(&r[1308..1340]),
+                margin_currency: from_utf16_le(&r[1340..1372]),
+                tick_value: f64_at(&r[1440..]),
+                tick_size: f64_at(&r[1448..]),
+                contract_size: f64_at(&r[1456..]),
+                calc_mode: u32_at(&r[1468..]),
+                trade_mode: u32_at(&r[1800..]),
+                stops_level: u32_at(&r[1804..]),
+                freeze_level: u32_at(&r[1808..]),
+                execution_mode: u32_at(&r[1812..]),
+                filling_flags: u32_at(&r[1816..]),
+                min_volume: lots(1872),
+                max_volume: lots(1880),
+                volume_step: lots(1888),
+                full: true,
+            })
+        })
+        .collect()
+}
+
+/// Bytes in one tick-statistics record (`CMD_TICK_STATS`), pushed after a
+/// subscription: the last bid and ask with their server time, even when the
+/// market is closed and no quote will stream.
+pub const TICK_STATS_REC_SIZE: usize = 274;
+
+/// Last quotes from a tick-statistics push. `time_ms` is the server clock.
+pub fn parse_tick_stats(body: &[u8], symbols: &HashMap<String, Symbol>) -> Vec<Quote> {
+    let by_id: HashMap<u32, &Symbol> = symbols.values().map(|s| (s.id, s)).collect();
+    body.chunks_exact(TICK_STATS_REC_SIZE)
+        .filter_map(|r| {
+            let sym = by_id.get(&u32_at(r))?;
+            let div = 10f64.powi(sym.digits as i32);
+            let (bid, ask) = (f64_at(&r[20..]) / div, f64_at(&r[44..]) / div);
+            (bid > 0.0 && ask > 0.0).then(|| Quote {
+                symbol: sym.name.clone(),
+                symbol_id: sym.id,
+                bid,
+                ask,
+                time_ms: i64_at(&r[208..]),
+            })
+        })
+        .collect()
 }
 
 pub fn parse_quotes(body: &[u8], symbols: &HashMap<String, Symbol>) -> Vec<Quote> {
@@ -320,10 +436,23 @@ pub fn parse_orders(body: &[u8]) -> Vec<Order> {
     out
 }
 
-/// Bytes in one web-terminal deal record: i64 ticket, w64 external id, i64
-/// order, u32 time, u32, w64 symbol, u32, u32 type, 4 x f64 (price first),
-/// u64 volume, 5 x f64 (profit, _, _, commission, swap), 2 x i64, w64 comment,
-/// f64, 3 x u32, 2 x i32, f64.
+/// Bytes in one web-terminal deal record: i64 ticket, w32 external id, i64
+/// order, i64 time, w32 symbol, u32 type, u32 entry, 4 x f64 (price, position
+/// price, sl, tp), u64 volume, 5 x f64 (profit, profit rate, margin rate,
+/// commission, swap), i64 magic, i64 position, w32 comment, f64 contract
+/// size, 5 x u32 (the second is the digits of money, the fourth the
+/// milliseconds of the time), f64.
+///
+/// A history reply is a u32 count and that many deals, then a u32 count and
+/// the order history. The body therefore does not divide into deals, and the
+/// stride is fixed: an earlier guess from the body length read 940 bytes per
+/// deal on an account with order history, and every deal after the first
+/// from the wrong place.
+///
+/// Every field except commission was matched against the native session's
+/// deal history for the same accounts: 485 deals with entries in, out and
+/// out-by. In/out reversal needs a netting account and was not seen.
+/// Commission was zero throughout, so its offset is unconfirmed.
 pub const DEAL_REC_SIZE: usize = 356;
 
 pub fn parse_deals(body: &[u8]) -> Vec<Deal> {
@@ -331,30 +460,31 @@ pub fn parse_deals(body: &[u8]) -> Vec<Deal> {
         return vec![];
     }
     let count = u32_at(body) as usize;
-    // The previous walk stepped 364 bytes per record, so every deal after the
-    // first was read from the wrong place. A newer server may append fields;
-    // when the body divides evenly into larger records, step by that.
-    let records = body.len() - 4;
-    let size = match count {
-        0 => return vec![],
-        n if records % n == 0 && records / n >= DEAL_REC_SIZE => records / n,
-        _ => DEAL_REC_SIZE,
-    };
     body[4..]
-        .chunks_exact(size)
+        .chunks_exact(DEAL_REC_SIZE)
         .take(count)
-        .map(|rec| Deal {
-            ticket: i64_at(rec),
-            order: i64_at(&rec[72..]),
-            time: u32_at(&rec[80..]) as i64,
-            symbol: from_utf16_le(&rec[88..152]),
-            side: u32_at(&rec[156..]),
-            price: f64_at(&rec[160..]),
-            volume: u64_at(&rec[192..]) as f64 / LOT_MULTIPLIER,
-            profit: f64_at(&rec[200..]),
-            commission: f64_at(&rec[224..]),
-            swap: f64_at(&rec[232..]),
-            comment: from_utf16_le(&rec[256..320]),
+        .map(|rec| {
+            let time = i64_at(&rec[80..]);
+            Deal {
+                ticket: i64_at(rec),
+                order: i64_at(&rec[72..]),
+                time,
+                time_ms: time * 1000 + u32_at(&rec[340..]).min(999) as i64,
+                symbol: from_utf16_le(&rec[88..152]),
+                kind: u32_at(&rec[152..]),
+                entry: u32_at(&rec[156..]),
+                price: f64_at(&rec[160..]),
+                sl: f64_at(&rec[176..]),
+                tp: f64_at(&rec[184..]),
+                volume: u64_at(&rec[192..]) as f64 / LOT_MULTIPLIER,
+                profit: f64_at(&rec[200..]),
+                commission: f64_at(&rec[224..]),
+                swap: f64_at(&rec[232..]),
+                magic: i64_at(&rec[240..]),
+                position: i64_at(&rec[248..]),
+                comment: from_utf16_le(&rec[256..320]),
+                contract_size: f64_at(&rec[320..]),
+            }
         })
         .collect()
 }
@@ -394,54 +524,86 @@ mod tests {
     use super::*;
     use crate::protocol::utf16_le;
 
+    struct D {
+        ticket: i64,
+        position: i64,
+        time: i64,
+        symbol: &'static str,
+        kind: u32,
+        entry: u32,
+        comment: &'static str,
+    }
+
     /// One synthetic record laid out field by field from the deal schema, with
     /// a distinct value in every slot so a misread offset shows.
-    fn deal_record(ticket: i64, time: u32, symbol: &str, side: u32, comment: &str) -> Vec<u8> {
+    fn deal_record(d: &D) -> Vec<u8> {
         let mut r = Vec::new();
-        r.extend(ticket.to_le_bytes());
+        r.extend(d.ticket.to_le_bytes());
         r.extend(utf16_le("ext", 64));
-        r.extend((ticket + 1).to_le_bytes()); // order
-        r.extend(time.to_le_bytes());
-        r.extend(7u32.to_le_bytes());
-        r.extend(utf16_le(symbol, 64));
-        r.extend(9u32.to_le_bytes());
-        r.extend(side.to_le_bytes());
-        for v in [2650.5f64, 2600.0, 2700.0, 11.0] {
-            r.extend(v.to_le_bytes());
+        r.extend((d.ticket + 1).to_le_bytes()); // order
+        r.extend(d.time.to_le_bytes());
+        r.extend(utf16_le(d.symbol, 64));
+        r.extend(d.kind.to_le_bytes());
+        r.extend(d.entry.to_le_bytes());
+        for v in [2650.5f64, 2649.0, 2600.0, 2700.0] {
+            r.extend(v.to_le_bytes()); // price, position price, sl, tp
         }
         r.extend(2_000_000u64.to_le_bytes()); // 0.02 lots
-        for v in [12.34f64, 13.0, 14.0, -0.7, -1.25] {
-            r.extend(v.to_le_bytes()); // profit, _, _, commission, swap
+        for v in [12.34f64, 1.25, 0.8, -0.7, -1.25] {
+            r.extend(v.to_le_bytes()); // profit, rates, commission, swap
         }
-        r.extend(555i64.to_le_bytes());
-        r.extend(666i64.to_le_bytes());
-        r.extend(utf16_le(comment, 64));
-        r.extend(17.0f64.to_le_bytes());
-        for v in [18u32, 19, 20] {
-            r.extend(v.to_le_bytes());
+        r.extend(424242i64.to_le_bytes()); // magic
+        r.extend(d.position.to_le_bytes());
+        r.extend(utf16_le(d.comment, 64));
+        r.extend(100.0f64.to_le_bytes()); // contract size
+        for v in [5u32, 2, 2, 250, 0] {
+            r.extend(v.to_le_bytes()); // .., money digits, milliseconds, ..
         }
-        for v in [21i32, 22] {
-            r.extend(v.to_le_bytes());
-        }
-        r.extend(23.0f64.to_le_bytes());
+        r.extend(0.0f64.to_le_bytes());
         assert_eq!(r.len(), DEAL_REC_SIZE);
         r
     }
 
+    fn reply(deals: &[D], trailing_orders: usize) -> Vec<u8> {
+        let mut body = (deals.len() as u32).to_le_bytes().to_vec();
+        for d in deals {
+            body.extend(deal_record(d));
+        }
+        // Order history follows the deals in the same reply.
+        body.extend((trailing_orders as u32).to_le_bytes());
+        body.extend(vec![0x5a; trailing_orders * ORDER_REC_SIZE]);
+        body
+    }
+
+    fn two() -> [D; 2] {
+        [
+            D { ticket: 1001, position: 1002, time: 1_758_800_000, symbol: "XAUUSD", kind: 0, entry: ENTRY_IN, comment: "first" },
+            D { ticket: 2002, position: 1002, time: 1_758_803_600, symbol: "XAUUSD", kind: 1, entry: ENTRY_OUT_BY, comment: "second" },
+        ]
+    }
+
     #[test]
-    fn every_deal_in_a_history_reply_is_read_from_its_own_record() {
-        let mut body = 2u32.to_le_bytes().to_vec();
-        body.extend(deal_record(1001, 1_758_800_000, "XAUUSD", 0, "first"));
-        body.extend(deal_record(2002, 1_758_803_600, "BTCUSD", 1, "second"));
-        let deals = parse_deals(&body);
+    fn every_deal_is_read_from_its_own_record_with_entry_and_position() {
+        let deals = parse_deals(&reply(&two(), 0));
         assert_eq!(deals.len(), 2);
         let (a, b) = (&deals[0], &deals[1]);
-        assert_eq!((a.ticket, a.order, a.time, a.symbol.as_str(), a.side), (1001, 1002, 1_758_800_000, "XAUUSD", 0));
-        assert_eq!((a.price, a.volume, a.profit, a.commission, a.swap), (2650.5, 0.02, 12.34, -0.7, -1.25));
+        assert_eq!((a.ticket, a.order, a.position, a.time, a.symbol.as_str()), (1001, 1002, 1002, 1_758_800_000, "XAUUSD"));
+        assert_eq!((a.kind, a.entry, a.magic, a.time_ms), (0, ENTRY_IN, 424242, 1_758_800_000_250));
+        assert_eq!((a.price, a.sl, a.tp, a.volume), (2650.5, 2600.0, 2700.0, 0.02));
+        assert_eq!((a.profit, a.commission, a.swap, a.contract_size), (12.34, -0.7, -1.25, 100.0));
         assert_eq!(a.comment, "first");
         // The second record is where a wrong stride shows.
-        assert_eq!((b.ticket, b.order, b.time, b.symbol.as_str(), b.side), (2002, 2003, 1_758_803_600, "BTCUSD", 1));
+        assert_eq!((b.ticket, b.position, b.time, b.kind, b.entry), (2002, 1002, 1_758_803_600, 1, ENTRY_OUT_BY));
         assert_eq!(b.comment, "second");
+    }
+
+    #[test]
+    fn order_history_after_the_deals_does_not_change_the_stride() {
+        // 2 deals and 3 orders: 4 + 712 + 4 + 1068 bytes divide into two
+        // 892-byte "records", the shape that fooled the old walk.
+        let deals = parse_deals(&reply(&two(), 3));
+        assert_eq!(deals.iter().map(|d| d.ticket).collect::<Vec<_>>(), vec![1001, 2002]);
+        assert_eq!(deals[1].entry, ENTRY_OUT_BY);
     }
 
     #[test]
@@ -449,8 +611,90 @@ mod tests {
         assert!(parse_deals(&[]).is_empty());
         assert!(parse_deals(&0u32.to_le_bytes()).is_empty());
         let mut body = 2u32.to_le_bytes().to_vec();
-        body.extend(deal_record(1, 1, "EURUSD", 0, ""));
+        body.extend(deal_record(&two()[0]));
         body.extend([0u8; 100]);
         assert_eq!(parse_deals(&body).len(), 1);
+    }
+
+    fn info_record(name: &str, id: u32, digits: u32, contract: f64, calc: u32, profit_ccy: &str) -> Vec<u8> {
+        let mut r = vec![0u8; SYMBOL_INFO_REC_SIZE];
+        r[..64].copy_from_slice(&utf16_le(name, 64));
+        r[1276..1308].copy_from_slice(&utf16_le("XAU", 32));
+        r[1308..1340].copy_from_slice(&utf16_le(profit_ccy, 32));
+        r[1340..1372].copy_from_slice(&utf16_le("XAU", 32));
+        r[1392..1396].copy_from_slice(&digits.to_le_bytes());
+        r[1396..1404].copy_from_slice(&10f64.powi(-(digits as i32)).to_le_bytes());
+        r[1412..1416].copy_from_slice(&id.to_le_bytes());
+        r[1440..1448].copy_from_slice(&0.5f64.to_le_bytes());
+        r[1448..1456].copy_from_slice(&0.25f64.to_le_bytes());
+        r[1456..1464].copy_from_slice(&contract.to_le_bytes());
+        r[1468..1472].copy_from_slice(&calc.to_le_bytes());
+        for (at, v) in [(1800, 4u32), (1804, 20), (1808, 3), (1812, 2), (1816, 2)] {
+            r[at..at + 4].copy_from_slice(&v.to_le_bytes());
+        }
+        for (at, lots) in [(1872, 0.01f64), (1880, 100.0), (1888, 0.02)] {
+            r[at..at + 8].copy_from_slice(&((lots * LOT_MULTIPLIER) as u64).to_le_bytes());
+        }
+        r
+    }
+
+    #[test]
+    fn a_full_specification_carries_sizing_fields() {
+        let mut body = 2u32.to_le_bytes().to_vec();
+        body.extend(info_record("XAUUSD", 96, 2, 100.0, 4, "USD"));
+        body.extend(info_record("EURUSD", 1, 5, 100_000.0, 0, "USD"));
+        let v = parse_symbol_info(&body);
+        assert_eq!(v.len(), 2);
+        let x = &v[0];
+        assert!(x.full);
+        assert_eq!((x.name.as_str(), x.id, x.digits, x.point), ("XAUUSD", 96, 2, 0.01));
+        assert_eq!((x.contract_size, x.tick_value, x.tick_size, x.calc_mode), (100.0, 0.5, 0.25, 4));
+        assert_eq!((x.min_volume, x.max_volume, x.volume_step), (0.01, 100.0, 0.02));
+        assert_eq!((x.trade_mode, x.stops_level, x.freeze_level, x.execution_mode, x.filling_flags), (4, 20, 3, 2, 2));
+        assert_eq!((x.base_currency.as_str(), x.profit_currency.as_str(), x.margin_currency.as_str()), ("XAU", "USD", "XAU"));
+        assert_eq!((v[1].name.as_str(), v[1].contract_size, v[1].digits), ("EURUSD", 100_000.0, 5));
+    }
+
+    #[test]
+    fn the_symbol_list_alone_is_not_a_full_specification() {
+        let mut raw = 1u32.to_le_bytes().to_vec();
+        let mut rec = vec![0u8; SYMBOL_LIST_REC_SIZE];
+        rec[..64].copy_from_slice(&utf16_le("USDX", 64));
+        rec[192..196].copy_from_slice(&3u32.to_le_bytes());
+        rec[196..200].copy_from_slice(&94u32.to_le_bytes());
+        rec[456..460].copy_from_slice(&2u32.to_le_bytes());
+        raw.extend(rec);
+        let s = &parse_symbol_list(&raw)["USDX"];
+        assert_eq!((s.id, s.digits, s.calc_mode, s.point), (94, 3, 2, 0.001));
+        assert!(!s.full);
+        assert_eq!((s.contract_size, s.min_volume, s.volume_step, s.tick_value), (0.0, 0.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn tick_stats_give_the_last_quote_with_its_server_time() {
+        let mut symbols = HashMap::new();
+        symbols.insert("USDX".to_string(), Symbol { name: "USDX".into(), id: 94, digits: 3, ..Default::default() });
+        let mut r = vec![0u8; TICK_STATS_REC_SIZE];
+        r[..4].copy_from_slice(&94u32.to_le_bytes());
+        r[20..28].copy_from_slice(&101250.0f64.to_le_bytes());
+        r[44..52].copy_from_slice(&101285.0f64.to_le_bytes());
+        r[208..216].copy_from_slice(&1_700_000_000_123i64.to_le_bytes());
+        let mut unknown = r.clone();
+        unknown[..4].copy_from_slice(&7u32.to_le_bytes());
+        r.extend(unknown);
+        let q = parse_tick_stats(&r, &symbols);
+        assert_eq!(q.len(), 1);
+        assert_eq!((q[0].symbol.as_str(), q[0].bid, q[0].ask, q[0].time_ms), ("USDX", 101.25, 101.285, 1_700_000_000_123));
+    }
+
+    #[test]
+    fn the_account_frame_gives_the_server_time_zone() {
+        let mut body = vec![0u8; 800];
+        body[9..17].copy_from_slice(&155.16f64.to_le_bytes());
+        body[739..743].copy_from_slice(&10800i32.to_le_bytes());
+        body[752..760].copy_from_slice(&50.0f64.to_le_bytes());
+        let a = parse_account(&body, 1, "Example-Demo");
+        assert_eq!((a.balance, a.equity, a.timezone_shift_seconds, a.daylight_mode), (155.16, 155.16, 10800, 0));
+        assert_eq!(a.server, "Example-Demo");
     }
 }

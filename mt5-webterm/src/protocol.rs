@@ -10,7 +10,10 @@ pub const CMD_SUBSCRIBE: u16 = 7;
 pub const CMD_QUOTES: u16 = 8;
 pub const CMD_RATES: u16 = 11;
 pub const CMD_TRADE: u16 = 12;
-pub const CMD_SPEC: u16 = 17;
+/// Pushed after a subscription: last bid/ask and session statistics per symbol.
+pub const CMD_TICK_STATS: u16 = 17;
+/// Full symbol specifications for a u32 count and that many symbol ids.
+pub const CMD_SYMBOL_INFO: u16 = 18;
 pub const CMD_TRADE_EVENT: u16 = 19;
 pub const CMD_LOGIN: u16 = 28;
 pub const CMD_SYMBOLS: u16 = 34;

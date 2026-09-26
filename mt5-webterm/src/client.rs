@@ -2,16 +2,17 @@
 
 use crate::crypto::{aes_decrypt, aes_encrypt, STATIC_KEY};
 use crate::parse::{
-    parse_account, parse_candles, parse_deals, parse_orders, parse_positions, parse_quotes, parse_symbols,
-    parse_trade_event, Account, Candle, Deal, Order, Position, Quote, Symbol,
+    parse_account, parse_candles, parse_deals, parse_orders, parse_positions, parse_quotes, parse_symbol_info,
+    parse_symbols, parse_tick_stats, parse_trade_event, Account, Candle, Deal, Order, Position, Quote, Symbol,
 };
 use crate::protocol::*;
 use crate::search::find_web_terminal;
 use futures_util::{SinkExt, StreamExt};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{mpsc, oneshot, Mutex};
+use tokio::sync::{broadcast, mpsc, oneshot, Mutex};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{connect_async_tls_with_config, Connector};
@@ -35,6 +36,9 @@ pub struct Client {
     quotes: Arc<Mutex<HashMap<String, Quote>>>,
     symbols: Arc<Mutex<HashMap<String, Symbol>>>,
     account: Arc<Mutex<Option<Account>>>,
+    frames: broadcast::Sender<Frame>,
+    closed: Arc<AtomicBool>,
+    tz_shift: Arc<AtomicI64>,
     login: u64,
     server: String,
 }
@@ -106,12 +110,25 @@ impl Client {
         let quotes: Arc<Mutex<HashMap<String, Quote>>> = Arc::new(Mutex::new(HashMap::new()));
         let symbols = Arc::new(Mutex::new(HashMap::new()));
         let account = Arc::new(Mutex::new(None));
+        let (frames, _) = broadcast::channel::<Frame>(256);
+        let frames_r = frames.clone();
         let pending_r = pending.clone();
         let quotes_r = quotes.clone();
         let symbols_r = symbols.clone();
+        let closed = Arc::new(AtomicBool::new(false));
+        let closed_r = closed.clone();
+        let tz_shift = Arc::new(AtomicI64::new(0));
+        let tz_r = tz_shift.clone();
         tokio::spawn(async move {
             while let Some(msg) = read.next().await {
-                let Ok(Message::Binary(raw)) = msg else { continue };
+                let msg = match msg {
+                    Ok(m) => m,
+                    Err(_) => break,
+                };
+                if matches!(msg, Message::Close(_)) {
+                    break;
+                }
+                let Message::Binary(raw) = msg else { continue };
                 if raw.len() < 8 {
                     continue;
                 }
@@ -120,6 +137,7 @@ impl Client {
                 if let Some(wait) = pending_r.lock().await.remove(&frame.cmd_id) {
                     let _ = wait.send(frame.clone());
                 }
+                let _ = frames_r.send(frame.clone());
                 if frame.cmd_id == CMD_QUOTES {
                     let map = symbols_r.lock().await.clone();
                     for mut item in parse_quotes(&frame.body, &map) {
@@ -143,10 +161,37 @@ impl Client {
                         cache.insert(item.symbol.clone(), item);
                     }
                 }
+                if frame.cmd_id == CMD_TICK_STATS {
+                    // The last quote and its server time, sent even when the
+                    // market is closed and nothing will stream. It only fills
+                    // a gap: a streamed quote is never older.
+                    let map = symbols_r.lock().await.clone();
+                    let shift_ms = tz_r.load(Ordering::Relaxed) * 1000;
+                    let mut cache = quotes_r.lock().await;
+                    for mut item in parse_tick_stats(&frame.body, &map) {
+                        item.time_ms -= shift_ms;
+                        cache.entry(item.symbol.clone()).or_insert(item);
+                    }
+                }
             }
+            // The socket is gone. Pending requests would otherwise wait out
+            // their full timeout, and a holder would keep using a dead client.
+            closed_r.store(true, Ordering::Relaxed);
+            pending_r.lock().await.clear();
         });
 
-        let client = Client { tx, pending, quotes, symbols, account, login, server: server.to_string() };
+        let client = Client {
+            tx,
+            pending,
+            quotes,
+            symbols,
+            account,
+            frames,
+            closed,
+            tz_shift,
+            login,
+            server: server.to_string(),
+        };
         // The heartbeat must not keep the session alive by itself: it holds
         // only a weak sender and stops once every client handle is dropped.
         let hb = client.tx.downgrade();
@@ -161,7 +206,9 @@ impl Client {
         });
 
         if let Ok(frame) = client.request(CMD_ACCOUNT, &[]).await {
-            *client.account.lock().await = Some(parse_account(&frame.body, login, server));
+            let acct = parse_account(&frame.body, login, server);
+            client.tz_shift.store(acct.timezone_shift_seconds, Ordering::Relaxed);
+            *client.account.lock().await = Some(acct);
         }
         if let Ok(frame) = client.request(CMD_SYMBOLS, &[]).await {
             *client.symbols.lock().await = parse_symbols(&frame.body);
@@ -175,6 +222,9 @@ impl Client {
     }
 
     pub async fn request(&self, cmd: u16, payload: &[u8]) -> Result<Frame, Error> {
+        if self.is_closed() {
+            return Err(Error::Msg("web-terminal session closed".into()));
+        }
         let (tx, rx) = oneshot::channel();
         self.pending.lock().await.insert(cmd, tx);
         self.send_cmd(cmd, payload).await?;
@@ -184,9 +234,49 @@ impl Client {
             .map_err(|_| "cancelled".to_string())?)
     }
 
+    /// Every frame the server sends from now on, answers and pushes alike.
+    /// A receiver that falls behind loses the oldest frames, not the session.
+    pub fn frames(&self) -> broadcast::Receiver<Frame> {
+        self.frames.subscribe()
+    }
+
+    /// True once the socket has closed or failed. A closed client never
+    /// recovers; dial a new one.
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::Relaxed)
+    }
+
+    /// Seconds the server clock runs ahead of UTC, from the account frame.
+    pub fn timezone_shift_seconds(&self) -> i64 {
+        self.tz_shift.load(Ordering::Relaxed)
+    }
+
+    /// Read the full specification of `names` and keep it in the symbol
+    /// cache. Names the server does not list are skipped.
+    pub async fn symbol_info(&self, names: &[String]) -> Result<Vec<Symbol>, Error> {
+        let ids: Vec<u32> = {
+            let map = self.symbols.lock().await;
+            names.iter().filter_map(|n| map.get(n).map(|s| s.id)).collect()
+        };
+        if ids.is_empty() {
+            return Ok(vec![]);
+        }
+        let mut payload = Vec::from((ids.len() as u32).to_le_bytes());
+        for id in &ids {
+            payload.extend_from_slice(&id.to_le_bytes());
+        }
+        let infos = parse_symbol_info(&self.request(CMD_SYMBOL_INFO, &payload).await?.body);
+        let mut map = self.symbols.lock().await;
+        for s in &infos {
+            map.insert(s.name.clone(), s.clone());
+        }
+        Ok(infos)
+    }
+
     pub async fn account(&self) -> Result<Account, Error> {
         let frame = self.request(CMD_ACCOUNT, &[]).await?;
         let acct = parse_account(&frame.body, self.login, &self.server);
+        self.tz_shift.store(acct.timezone_shift_seconds, Ordering::Relaxed);
         *self.account.lock().await = Some(acct.clone());
         Ok(acct)
     }

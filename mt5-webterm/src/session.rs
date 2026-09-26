@@ -12,11 +12,19 @@
 //!   as the balance.
 //! * A new order or position is identified by difference when the trade answer
 //!   carries ticket 0, which it does for some commands.
+//! * A connection whose socket has closed is dialled again on the next call,
+//!   and tick streams follow the new connection.
+//! * Times are UTC. The server sends candles, deals and positions on its own
+//!   clock; the account frame says how far that runs ahead of UTC.
+//! * Symbols in use carry their full specification, and their tick value in
+//!   the account currency is derived from contract size, tick size and the
+//!   quote of a converting currency pair.
 //!
 //! Everything here uses this crate's own types, so a host maps them into its
 //! own model at its edge.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use futures_util::stream::{self, Stream};
@@ -112,12 +120,20 @@ impl OrderKind {
 pub struct Snapshot {
     /// Balance from the server; `equity` is recomputed as balance + floating.
     pub account: Account,
+    /// Opening times are UTC.
     pub positions: Vec<Position>,
     pub orders: Vec<Order>,
-    /// Live quotes for every symbol with an open position or order. A symbol
-    /// whose book has not filled yet is absent, never zero.
+    /// Quotes for every symbol with an open position or order and every
+    /// symbol a host has asked for. A symbol whose book has not filled yet is
+    /// absent, never zero. Times are UTC.
     pub quotes: HashMap<String, Quote>,
+    /// The symbol list. Symbols a host trades or has asked for carry their
+    /// full specification (`Symbol::full`).
     pub symbols: HashMap<String, Symbol>,
+    /// Money per tick per lot in the account currency, for fully specified
+    /// symbols whose profit currency converts to it. A symbol whose rate is
+    /// unknown is absent rather than guessed.
+    pub tick_values: HashMap<String, f64>,
     pub timestamp_ms: i64,
     /// True when this call redialled the session first.
     pub refreshed: bool,
@@ -147,12 +163,24 @@ pub struct Receipt {
     pub price: Option<f64>,
 }
 
+/// The live connection and what was asked of it, shared with tick streams so
+/// a stream follows the session across redials instead of holding on to the
+/// socket it started with.
+struct Live {
+    client: Option<Client>,
+    /// Incremented on every dial, so a stream can tell it must subscribe again.
+    generation: u64,
+    /// Symbols subscribed on the current client.
+    subscribed: HashSet<String>,
+}
+
 pub struct Session {
     login: u64,
     password: String,
     server: String,
-    inner: Mutex<Option<Client>>,
-    subscribed: Mutex<HashSet<String>>,
+    live: Arc<Mutex<Live>>,
+    /// Symbols a host has streamed or re-asked for; kept across redials.
+    interest: Arc<Mutex<HashSet<String>>>,
     opened_at: Mutex<Option<Instant>>,
     backoff: Mutex<(u32, Option<Instant>)>,
 }
@@ -167,8 +195,8 @@ impl Session {
             login,
             password,
             server,
-            inner: Mutex::new(None),
-            subscribed: Mutex::new(HashSet::new()),
+            live: Arc::new(Mutex::new(Live { client: None, generation: 0, subscribed: HashSet::new() })),
+            interest: Arc::new(Mutex::new(HashSet::new())),
             opened_at: Mutex::new(None),
             backoff: Mutex::new((0, None)),
         }
@@ -176,14 +204,23 @@ impl Session {
 
     /// Drop the cached connection so the next call dials a fresh one.
     async fn reconnect(&self) -> Result<Client, SessionError> {
-        *self.inner.lock().await = None;
-        self.subscribed.lock().await.clear();
+        {
+            let mut live = self.live.lock().await;
+            live.client = None;
+            live.subscribed.clear();
+        }
         self.client().await
     }
 
     async fn client(&self) -> Result<Client, SessionError> {
-        let mut g = self.inner.lock().await;
-        if g.is_none() {
+        let mut live = self.live.lock().await;
+        if live.client.as_ref().is_some_and(|c| c.is_closed()) {
+            // The socket died under us. Dial again rather than answer every
+            // request with a timeout until the scheduled refresh.
+            live.client = None;
+            live.subscribed.clear();
+        }
+        if live.client.is_none() {
             {
                 let b = self.backoff.lock().await;
                 if let Some(until) = b.1 {
@@ -198,7 +235,8 @@ impl Session {
             }
             match Client::connect(self.login, &self.password, &self.server).await {
                 Ok(c) => {
-                    *g = Some(c);
+                    live.client = Some(c);
+                    live.generation += 1;
                     *self.opened_at.lock().await = Some(Instant::now());
                     *self.backoff.lock().await = (0, None);
                 }
@@ -214,7 +252,23 @@ impl Session {
                 }
             }
         }
-        Ok(g.as_ref().unwrap().clone())
+        Ok(live.client.as_ref().unwrap().clone())
+    }
+
+    /// Subscribe `names` on `c` unless already subscribed on it.
+    async fn ensure_subscribed(&self, c: &Client, names: &[String]) {
+        let fresh: Vec<String> = {
+            let live = self.live.lock().await;
+            names.iter().filter(|s| !live.subscribed.contains(*s)).cloned().collect()
+        };
+        if !fresh.is_empty() && c.subscribe(&fresh).await.is_ok() {
+            self.live.lock().await.subscribed.extend(fresh);
+        }
+    }
+
+    /// Seconds the server clock runs ahead of UTC, once a session has dialled.
+    pub async fn timezone_shift_seconds(&self) -> Result<i64, SessionError> {
+        Ok(self.client().await?.timezone_shift_seconds())
     }
 
     pub async fn snapshot(&self) -> Result<Snapshot, SessionError> {
@@ -224,23 +278,28 @@ impl Session {
             c = self.reconnect().await?;
         }
         let mut account = c.account().await.map_err(|e| SessionError::Unavailable(e.to_string()))?;
-        let positions = c.positions().await.map_err(other)?;
+        let shift = account.timezone_shift_seconds;
+        let mut positions = c.positions().await.map_err(other)?;
+        for p in &mut positions {
+            p.time -= shift;
+        }
         let orders = c.orders().await.map_err(other)?;
 
-        let mut wanted: Vec<String> =
-            positions.iter().map(|p| p.symbol.clone()).chain(orders.iter().map(|o| o.symbol.clone())).collect();
+        let mut wanted: Vec<String> = positions
+            .iter()
+            .map(|p| p.symbol.clone())
+            .chain(orders.iter().map(|o| o.symbol.clone()))
+            .chain(self.interest.lock().await.iter().cloned())
+            .collect();
         wanted.sort();
         wanted.dedup();
-        if !wanted.is_empty() {
-            let mut sub = self.subscribed.lock().await;
-            let fresh: Vec<String> = wanted.iter().filter(|s| !sub.contains(*s)).cloned().collect();
-            if !fresh.is_empty() {
-                let _ = c.subscribe(&fresh).await;
-                sub.extend(fresh);
-            }
-        }
+        let pairs = self.load_specs(&c, &wanted, &account.currency).await;
+        let mut streamed: Vec<String> = wanted.iter().cloned().chain(pairs.values().map(|p| p.name.clone())).collect();
+        streamed.sort();
+        streamed.dedup();
+        self.ensure_subscribed(&c, &streamed).await;
         let mut quotes = HashMap::new();
-        for sym in &wanted {
+        for sym in &streamed {
             let mut q = c.quote(sym).await;
             if q.as_ref().map_or(true, |x| x.bid <= 0.0 || x.ask <= 0.0) {
                 q = tokio::time::timeout(Duration::from_millis(1500), c.wait_quote(sym)).await.ok().and_then(|r| r.ok());
@@ -249,6 +308,16 @@ impl Session {
                 quotes.insert(sym.clone(), x);
             }
         }
+        let symbols = c.symbols().await;
+        let tick_values = wanted
+            .iter()
+            .filter_map(|name| {
+                let s = symbols.get(name).filter(|s| s.full)?;
+                let rate = conversion_rate(&s.profit_currency, &account.currency, &pairs, &quotes)?;
+                let v = tick_value(s, rate);
+                (v > 0.0).then(|| (name.clone(), v))
+            })
+            .collect();
         let floating: f64 = positions.iter().map(|p| p.profit + p.swap + p.commission).sum();
         account.equity = account.balance + floating;
         Ok(Snapshot {
@@ -256,28 +325,80 @@ impl Session {
             positions,
             orders,
             quotes,
-            symbols: c.symbols().await,
+            symbols,
+            tick_values,
             timestamp_ms: now_ms(),
             refreshed: stale,
         })
     }
 
+    /// Read full specifications for `wanted` that lack one, and for the
+    /// currency pairs that convert their profit currency to `deposit`.
+    /// Returns the conversion pair chosen for each profit currency.
+    async fn load_specs(&self, c: &Client, wanted: &[String], deposit: &str) -> HashMap<String, Symbol> {
+        let listed = c.symbols().await;
+        let missing: Vec<String> = wanted.iter().filter(|n| listed.get(*n).is_some_and(|s| !s.full)).cloned().collect();
+        if !missing.is_empty() {
+            let _ = c.symbol_info(&missing).await;
+        }
+        let listed = c.symbols().await;
+        let currencies: HashSet<String> = wanted
+            .iter()
+            .filter_map(|n| listed.get(n).filter(|s| s.full).map(|s| s.profit_currency.clone()))
+            .filter(|p| !p.is_empty() && p != deposit)
+            .collect();
+        let mut candidates: Vec<String> = Vec::new();
+        for p in &currencies {
+            candidates.extend(pair_candidates(&listed, p, deposit).into_iter().filter(|n| !listed[n].full));
+        }
+        if !candidates.is_empty() {
+            let _ = c.symbol_info(&candidates).await;
+        }
+        let listed = c.symbols().await;
+        currencies
+            .into_iter()
+            .filter_map(|p| {
+                let pair = pair_candidates(&listed, &p, deposit)
+                    .into_iter()
+                    .map(|n| &listed[&n])
+                    .find(|s| s.full && pair_direction(s, &p, deposit).is_some())?;
+                Some((p, pair.clone()))
+            })
+            .collect()
+    }
+
     /// Candles of `tf` ("M1", "M5", "M15", "M30", "H1", "H4", "D1") with
-    /// `from <= time < to`.
+    /// `from <= time < to`. Times in and out are UTC.
     pub async fn history(&self, symbol: &str, tf: &str, tf_seconds: i64, from: i64, to: i64) -> Result<Vec<Candle>, SessionError> {
         let c = self.client().await?;
+        let shift = c.timezone_shift_seconds();
         // Asked for the window itself: this used to count back from now, so
         // any range older than the latest candles came back empty.
         let from = from.max(to - tf_seconds.max(1) * 5000);
-        let rows = c.candles_between(symbol, tf, from, to).await.map_err(other)?;
-        Ok(rows.into_iter().filter(|r| r.time >= from && r.time < to).collect())
+        let rows = c.candles_between(symbol, tf, from + shift, to + shift).await.map_err(other)?;
+        Ok(rows
+            .into_iter()
+            .map(|mut r| {
+                r.time -= shift;
+                r
+            })
+            .filter(|r| r.time >= from && r.time < to)
+            .collect())
     }
 
-    /// The last `count` candles, optionally all before `before`.
+    /// The last `count` candles, optionally all before `before`. Times in
+    /// and out are UTC.
     pub async fn history_latest(&self, symbol: &str, tf: &str, count: usize, before: Option<i64>) -> Result<Vec<Candle>, SessionError> {
         let c = self.client().await?;
-        let (from, to) = rates_window(tf, count, before, now_ms() / 1000);
+        let shift = c.timezone_shift_seconds();
+        // The server's candles are on its own clock: "now" there is ahead of
+        // UTC by the shift, and a window ending at UTC now left out the most
+        // recent hours.
+        let (from, to) = rates_window(tf, count, before.map(|b| b + shift), now_ms() / 1000 + shift);
         let mut rows = c.candles_between(symbol, tf, from, to).await.map_err(other)?;
+        for r in &mut rows {
+            r.time -= shift;
+        }
         if let Some(b) = before {
             rows.retain(|r| r.time < b);
         }
@@ -287,41 +408,80 @@ impl Session {
         Ok(rows)
     }
 
+    /// Deals executed with `from <= time < to`. Times in and out are UTC;
+    /// `Deal::time` and `Deal::time_ms` are converted.
     pub async fn deals(&self, from: i64, to: i64) -> Result<Vec<Deal>, SessionError> {
         let c = self.client().await?;
-        c.deals(from.max(0) as u32, to.max(0) as u32).await.map_err(other)
+        let shift = c.timezone_shift_seconds();
+        let window = |t: i64| (t + shift).clamp(0, u32::MAX as i64) as u32;
+        let rows = c.deals(window(from), window(to)).await.map_err(other)?;
+        Ok(rows
+            .into_iter()
+            .map(|mut d| {
+                d.time -= shift;
+                d.time_ms -= shift * 1000;
+                d
+            })
+            .filter(|d| d.time >= from && d.time < to)
+            .collect())
     }
 
     /// A live stream of quotes: each symbol is emitted when its quote moves.
-    /// It stays open; it does not end after the current quotes.
+    /// It stays open and follows the session across redials, subscribing
+    /// again on each new connection. It never dials by itself.
     pub async fn ticks(&self, symbols: &[String]) -> Result<impl Stream<Item = Quote> + Send + 'static, SessionError> {
         let c = self.client().await?;
-        let _ = c.subscribe(symbols).await;
+        self.interest.lock().await.extend(symbols.iter().cloned());
+        self.ensure_subscribed(&c, symbols).await;
         let wanted: Vec<String> = symbols.to_vec();
+        let live = self.live.clone();
+        let generation = live.lock().await.generation;
         let seen: HashMap<String, i64> = HashMap::new();
-        Ok(stream::unfold((c, wanted, seen, Vec::<Quote>::new()), |(c, wanted, mut seen, mut queue)| async move {
-            loop {
-                if let Some(q) = queue.pop() {
-                    return Some((q, (c, wanted, seen, queue)));
-                }
-                tokio::time::sleep(Duration::from_millis(250)).await;
-                for s in &wanted {
-                    let Some(q) = c.quote(s).await else { continue };
-                    if q.bid <= 0.0 || q.ask <= 0.0 {
-                        continue;
+        Ok(stream::unfold(
+            (live, generation, wanted, seen, Vec::<Quote>::new()),
+            |(live, mut generation, wanted, mut seen, mut queue)| async move {
+                loop {
+                    if let Some(q) = queue.pop() {
+                        return Some((q, (live, generation, wanted, seen, queue)));
                     }
-                    if q.time_ms > seen.get(s).copied().unwrap_or(0) {
-                        seen.insert(s.clone(), q.time_ms);
-                        queue.push(q);
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                    let (c, current) = {
+                        let g = live.lock().await;
+                        (g.client.clone(), g.generation)
+                    };
+                    let Some(c) = c.filter(|c| !c.is_closed()) else { continue };
+                    if current != generation {
+                        let fresh: Vec<String> = {
+                            let g = live.lock().await;
+                            wanted.iter().filter(|s| !g.subscribed.contains(*s)).cloned().collect()
+                        };
+                        if fresh.is_empty() || c.subscribe(&fresh).await.is_ok() {
+                            live.lock().await.subscribed.extend(fresh);
+                            generation = current;
+                        }
+                    }
+                    for s in &wanted {
+                        let Some(q) = c.quote(s).await else { continue };
+                        if q.bid <= 0.0 || q.ask <= 0.0 {
+                            continue;
+                        }
+                        if q.time_ms > seen.get(s).copied().unwrap_or(0) {
+                            seen.insert(s.clone(), q.time_ms);
+                            queue.push(q);
+                        }
                     }
                 }
-            }
-        }))
+            },
+        ))
     }
 
+    /// Ask again for symbols whose prices have gone quiet. Symbols already
+    /// subscribed on the live connection are not asked for again.
     pub async fn resubscribe(&self, symbols: &[String]) -> Result<(), SessionError> {
         let c = self.client().await?;
-        c.subscribe(symbols).await.map_err(other)
+        self.interest.lock().await.extend(symbols.iter().cloned());
+        self.ensure_subscribed(&c, symbols).await;
+        Ok(())
     }
 
     pub async fn send(&self, cmd: &Command) -> Result<Receipt, SessionError> {
@@ -428,6 +588,54 @@ fn rates_window(tf: &str, count: usize, before: Option<i64>, now: i64) -> (i64, 
     }
 }
 
+/// Currency pairs, by name, that could convert between `a` and `b`: shortest
+/// name first, so a plain "GBPUSD" wins over a suffixed variant.
+fn pair_candidates(listed: &HashMap<String, Symbol>, a: &str, b: &str) -> Vec<String> {
+    let (ab, ba) = (format!("{a}{b}"), format!("{b}{a}"));
+    let mut v: Vec<String> = listed
+        .values()
+        .filter(|s| matches!(s.calc_mode, 0 | 5) && (s.name.starts_with(&ab) || s.name.starts_with(&ba)))
+        .map(|s| s.name.clone())
+        .collect();
+    v.sort_by(|x, y| x.len().cmp(&y.len()).then_with(|| x.cmp(y)));
+    v
+}
+
+/// Some(true) when `pair` quotes `from` in `to`, Some(false) when it quotes
+/// `to` in `from`.
+fn pair_direction(pair: &Symbol, from: &str, to: &str) -> Option<bool> {
+    if pair.base_currency == from && pair.profit_currency == to {
+        Some(true)
+    } else if pair.base_currency == to && pair.profit_currency == from {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+/// Units of `to` per unit of `from`, priced on the side that makes a loss
+/// larger, as the terminal prices risk.
+fn conversion_rate(from: &str, to: &str, pairs: &HashMap<String, Symbol>, quotes: &HashMap<String, Quote>) -> Option<f64> {
+    if from == to {
+        return Some(1.0);
+    }
+    let pair = pairs.get(from)?;
+    let q = quotes.get(&pair.name).filter(|q| q.bid > 0.0 && q.ask > 0.0)?;
+    Some(if pair_direction(pair, from, to)? { q.ask } else { 1.0 / q.bid })
+}
+
+/// Money per tick per lot in the account currency, given the rate from the
+/// symbol's profit currency. Forex and CFD modes derive it from contract size
+/// and tick size; other modes carry it in the specification.
+fn tick_value(s: &Symbol, rate: f64) -> f64 {
+    let tick = if s.tick_size > 0.0 { s.tick_size } else { s.point };
+    let v = match s.calc_mode {
+        0 | 2 | 3 | 4 | 5 | 32 => tick * s.contract_size * rate,
+        _ => s.tick_value * rate,
+    };
+    if v.is_finite() && v > 0.0 { v } else { 0.0 }
+}
+
 /// Every ticket the account holds, orders and positions together.
 async fn live_tickets(c: &Client) -> HashSet<i64> {
     let mut s = HashSet::new();
@@ -461,6 +669,56 @@ mod tests {
         assert_eq!(to, before, "the window ends where the chart's oldest candle is, not now");
         assert!(to - from >= 100 * 3600, "the window holds the candles asked for");
         assert_eq!(rates_window("M5", 10, None, now), (now - 20 * 300, now), "the latest candles use the usual window");
+    }
+
+    fn fx(name: &str, base: &str, profit: &str, contract: f64, digits: u32) -> Symbol {
+        Symbol {
+            name: name.into(),
+            base_currency: base.into(),
+            profit_currency: profit.into(),
+            contract_size: contract,
+            digits,
+            point: 10f64.powi(-(digits as i32)),
+            full: true,
+            ..Default::default()
+        }
+    }
+
+    fn quote(name: &str, bid: f64, ask: f64) -> (String, Quote) {
+        (name.to_string(), Quote { symbol: name.into(), bid, ask, ..Default::default() })
+    }
+
+    #[test]
+    fn tick_value_converts_the_profit_currency_to_the_account_currency() {
+        let gold = Symbol { calc_mode: 4, ..fx("XAUUSD", "XAU", "USD", 100.0, 2) };
+        let pairs: HashMap<String, Symbol> = [("USD".to_string(), fx("GBPUSD", "GBP", "USD", 100_000.0, 5))].into();
+        let quotes: HashMap<String, Quote> = [quote("GBPUSD", 1.25, 1.2502)].into();
+        // A GBP account: one gold tick (0.01 x 100 oz = 1 USD) is 1/1.25 GBP.
+        let rate = conversion_rate("USD", "GBP", &pairs, &quotes).unwrap();
+        assert!((tick_value(&gold, rate) - 0.8).abs() < 1e-12);
+        // A USD account needs no pair.
+        assert_eq!(tick_value(&gold, conversion_rate("USD", "USD", &pairs, &quotes).unwrap()), 1.0);
+        // The forward direction prices on the ask.
+        let pairs: HashMap<String, Symbol> = [("GBP".to_string(), fx("GBPUSD", "GBP", "USD", 100_000.0, 5))].into();
+        assert_eq!(conversion_rate("GBP", "USD", &pairs, &quotes), Some(1.2502));
+    }
+
+    #[test]
+    fn an_unconvertible_or_unquoted_symbol_has_no_tick_value() {
+        let pairs: HashMap<String, Symbol> = [("JPY".to_string(), fx("GBPJPY", "GBP", "JPY", 100_000.0, 3))].into();
+        assert_eq!(conversion_rate("JPY", "GBP", &pairs, &HashMap::new()), None, "no quote, no rate");
+        assert_eq!(conversion_rate("CHF", "GBP", &pairs, &HashMap::new()), None, "no pair, no rate");
+        let unknown = Symbol { calc_mode: 1, tick_value: 0.0, ..fx("FUT", "USD", "USD", 1.0, 2) };
+        assert_eq!(tick_value(&unknown, 1.0), 0.0);
+    }
+
+    #[test]
+    fn the_plain_pair_is_chosen_over_suffixed_ones_and_non_forex_is_ignored() {
+        let mut listed = HashMap::new();
+        for (name, calc) in [("GBPUSD.x", 0), ("GBPUSD", 0), ("USDGBPIDX", 2), ("EURUSD", 0)] {
+            listed.insert(name.to_string(), Symbol { name: name.into(), calc_mode: calc, ..Default::default() });
+        }
+        assert_eq!(pair_candidates(&listed, "USD", "GBP"), vec!["GBPUSD".to_string(), "GBPUSD.x".to_string()]);
     }
 
     #[test]
