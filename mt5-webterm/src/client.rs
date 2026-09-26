@@ -39,6 +39,8 @@ pub struct Client {
     frames: broadcast::Sender<Frame>,
     closed: Arc<AtomicBool>,
     tz_shift: Arc<AtomicI64>,
+    /// Every symbol id subscribed on this connection.
+    subscriptions: Arc<Mutex<std::collections::BTreeSet<u32>>>,
     login: u64,
     server: String,
 }
@@ -189,6 +191,7 @@ impl Client {
             frames,
             closed,
             tz_shift,
+            subscriptions: Arc::new(Mutex::new(std::collections::BTreeSet::new())),
             login,
             server: server.to_string(),
         };
@@ -289,17 +292,21 @@ impl Client {
         self.symbols.lock().await.clone()
     }
 
+    /// Add `names` to this connection's quote subscription. The request
+    /// carries every symbol subscribed so far: asking for one new symbol
+    /// alone stopped the quotes of all the others.
     pub async fn subscribe(&self, names: &[String]) -> Result<(), Error> {
         let map = self.symbols.lock().await.clone();
         let ids: Vec<u32> = names.iter().filter_map(|n| map.get(n).map(|s| s.id)).collect();
         if ids.is_empty() {
             return Ok(());
         }
-        let mut payload = Vec::from((ids.len() as u32).to_le_bytes());
-        for id in ids {
-            payload.extend_from_slice(&id.to_le_bytes());
-        }
-        self.send_cmd(CMD_SUBSCRIBE, &payload).await
+        let all: Vec<u32> = {
+            let mut set = self.subscriptions.lock().await;
+            set.extend(ids);
+            set.iter().copied().collect()
+        };
+        self.send_cmd(CMD_SUBSCRIBE, &subscription_payload(&all)).await
     }
 
     pub async fn quote(&self, symbol: &str) -> Option<Quote> {
@@ -389,5 +396,25 @@ where
     match msg {
         Message::Binary(b) => Ok(b),
         other => Err(Error::Msg(format!("unexpected {other}"))),
+    }
+}
+
+/// A subscription request: u32 count, then that many u32 symbol ids.
+fn subscription_payload(ids: &[u32]) -> Vec<u8> {
+    let mut payload = Vec::from((ids.len() as u32).to_le_bytes());
+    for id in ids {
+        payload.extend_from_slice(&id.to_le_bytes());
+    }
+    payload
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_subscription_names_every_symbol_in_it() {
+        let p = super::subscription_payload(&[1, 96, 101]);
+        assert_eq!(p.len(), 16);
+        assert_eq!(u32::from_le_bytes(p[..4].try_into().unwrap()), 3);
+        assert_eq!(u32::from_le_bytes(p[12..16].try_into().unwrap()), 101);
     }
 }
