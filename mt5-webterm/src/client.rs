@@ -258,7 +258,13 @@ impl Client {
             _ => 300,
         };
         let from = now - ((count as i32 + 10) * sec);
-        Ok(parse_candles(&self.request(CMD_RATES, &pack_rates_req(symbol, tf, from, now)).await?.body))
+        self.candles_between(symbol, tf, from as i64, now as i64).await
+    }
+
+    /// Candles the server holds between `from` and `to` (seconds).
+    pub async fn candles_between(&self, symbol: &str, tf: &str, from: i64, to: i64) -> Result<Vec<Candle>, Error> {
+        let clamp = |t: i64| t.clamp(0, i32::MAX as i64) as i32;
+        Ok(parse_candles(&self.request(CMD_RATES, &pack_rates_req(symbol, tf, clamp(from), clamp(to))).await?.body))
     }
 
     pub async fn send_op(&self, op: &[u8]) -> Result<(u32, i64, i64, f64), Error> {

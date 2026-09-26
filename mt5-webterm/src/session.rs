@@ -266,15 +266,18 @@ impl Session {
     /// `from <= time < to`.
     pub async fn history(&self, symbol: &str, tf: &str, tf_seconds: i64, from: i64, to: i64) -> Result<Vec<Candle>, SessionError> {
         let c = self.client().await?;
-        let count = ((to - from).abs() / tf_seconds.max(1)).clamp(1, 5000) as usize;
-        let rows = c.candles(symbol, tf, count).await.map_err(other)?;
+        // Asked for the window itself: this used to count back from now, so
+        // any range older than the latest candles came back empty.
+        let from = from.max(to - tf_seconds.max(1) * 5000);
+        let rows = c.candles_between(symbol, tf, from, to).await.map_err(other)?;
         Ok(rows.into_iter().filter(|r| r.time >= from && r.time < to).collect())
     }
 
     /// The last `count` candles, optionally all before `before`.
     pub async fn history_latest(&self, symbol: &str, tf: &str, count: usize, before: Option<i64>) -> Result<Vec<Candle>, SessionError> {
         let c = self.client().await?;
-        let mut rows = c.candles(symbol, tf, count + 10).await.map_err(other)?;
+        let (from, to) = rates_window(tf, count, before, now_ms() / 1000);
+        let mut rows = c.candles_between(symbol, tf, from, to).await.map_err(other)?;
         if let Some(b) = before {
             rows.retain(|r| r.time < b);
         }
@@ -403,6 +406,24 @@ fn short_comment(comment: &str) -> String {
     comment.chars().take(MAX_COMMENT_CHARS).collect()
 }
 
+/// The seconds window that holds the last `count` candles of `tf` ending at
+/// `before` (or now). Twice the span plus a weekend, so a closed market does
+/// not leave the chart short; callers keep only the last `count`.
+fn rates_window(tf: &str, count: usize, before: Option<i64>, now: i64) -> (i64, i64) {
+    let sec: i64 = match tf {
+        "M1" => 60,
+        "M5" => 300,
+        "M15" => 900,
+        "M30" => 1800,
+        "H1" => 3600,
+        "H4" => 14400,
+        "D1" => 86400,
+        _ => 300,
+    };
+    let to = before.unwrap_or(now);
+    (to - (count as i64 + 10) * sec * 2 - 3 * 86400, to)
+}
+
 /// Every ticket the account holds, orders and positions together.
 async fn live_tickets(c: &Client) -> HashSet<i64> {
     let mut s = HashSet::new();
@@ -426,6 +447,16 @@ mod tests {
         }
         assert_eq!(Side::from_code(0), Side::Buy);
         assert_eq!(Side::from_code(1), Side::Sell);
+    }
+
+    #[test]
+    fn scrolling_back_asks_for_candles_before_the_oldest_one_shown() {
+        let now = 1_790_000_000;
+        let before = now - 30 * 86400;
+        let (from, to) = rates_window("H1", 100, Some(before), now);
+        assert_eq!(to, before, "the window ends where the chart's oldest candle is, not now");
+        assert!(to - from >= 100 * 3600, "the window holds the candles asked for");
+        assert_eq!(rates_window("M5", 10, None, now).1, now);
     }
 
     #[test]
