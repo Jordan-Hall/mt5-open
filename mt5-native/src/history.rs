@@ -3,9 +3,9 @@
 //!
 //! A column group is a 52-byte container header, then fixed 36-byte column
 //! descriptors, then each column's DEFLATE block. Columns are projected onto a
-//! row table by column id. Two observed-consumer behaviours are preserved: a
-//! duplicate column id keeps the first occurrence, and an unknown column id is
-//! retained (decoded) but not projected. The declared inflate size is advisory;
+//! row table by column id. Duplicate column IDs keep the first occurrence;
+//! unknown column encodings are not assumed to be DEFLATE and are
+//! retained as opaque encoded bytes. The declared inflate size is advisory;
 //! the tick count in the container header governs how many rows exist.
 
 use std::collections::{BTreeMap, HashSet};
@@ -32,11 +32,15 @@ impl<'a> ByteReader<'a> {
         ByteReader { data, position: 0 }
     }
     pub fn take(&mut self, size: usize) -> Result<&'a [u8]> {
-        if self.position + size > self.data.len() {
-            return Err(ProtocolError::new("truncated byte field"));
-        }
-        let out = &self.data[self.position..self.position + size];
-        self.position += size;
+        let end = self
+            .position
+            .checked_add(size)
+            .ok_or_else(|| ProtocolError::new("byte field size overflow"))?;
+        let out = self
+            .data
+            .get(self.position..end)
+            .ok_or_else(|| ProtocolError::new("truncated byte field"))?;
+        self.position = end;
         Ok(out)
     }
 }
@@ -56,6 +60,8 @@ pub struct Descriptor {
     pub column_id: i32,
     pub descriptor_hex: String,
     pub decoded: Vec<u8>,
+    /// Unknown columns retain their original encoding until its grammar is known.
+    pub encoded: Vec<u8>,
     pub compression: &'static str,
     /// Whether this column was projected onto the row table. Duplicate and
     /// unknown column ids are decoded but not projected, and — mirroring the
@@ -112,6 +118,7 @@ pub fn read_column_group_limited(
             column_id: i32_at(raw, 12),
             descriptor_hex: crate::hexutil::encode(raw),
             decoded: Vec::new(),
+            encoded: Vec::new(),
             compression: "",
             projected: false,
             unused_tail: Vec::new(),
@@ -126,6 +133,11 @@ pub fn read_column_group_limited(
             return Err(ProtocolError::new("compressed byte limit exceeded"));
         }
         let compressed = reader.take(d.compressed_size as usize)?;
+        if !matches!(d.column_id, 1 | 2 | 4 | 8 | 16 | 64) {
+            d.encoded = compressed.to_vec();
+            d.compression = "opaque";
+            continue;
+        }
         let budget = max_bytes.saturating_sub(inflated_sum);
         let (decoded, fmt) = inflate_inner(compressed, budget)?;
         inflated_sum += decoded.len();
@@ -144,7 +156,9 @@ pub fn read_column_group_limited(
         d.projected = true;
         let buf = &d.decoded;
         if buf.len() < tick_count * 8 {
-            return Err(ProtocolError::new("column shorter than eight bytes per tick"));
+            return Err(ProtocolError::new(
+                "column shorter than eight bytes per tick",
+            ));
         }
         let mut previous = 0i128;
         for i in 0..tick_count {
@@ -186,7 +200,12 @@ pub enum ColumnValues {
 }
 
 /// Build a column group. Column ids 2/4/8 take doubles, 1 takes i64, others u64.
-pub fn make_column_group(columns: &[(i32, ColumnValues)], count: u32, raw: bool, word0: u32) -> Vec<u8> {
+pub fn make_column_group(
+    columns: &[(i32, ColumnValues)],
+    count: u32,
+    raw: bool,
+    word0: u32,
+) -> Vec<u8> {
     let mut headers = Vec::new();
     let mut blocks = Vec::new();
     for (cid, values) in columns {
@@ -234,7 +253,12 @@ pub fn read_trailing_hour_segment(reader: &mut ByteReader) -> Result<TrailingHou
     let header = reader.take(115)?.to_vec();
     let flags = u16::from_le_bytes([header[93], header[94]]);
     if flags & 2 == 0 {
-        return Ok(TrailingHours { header, hours: Vec::new(), indices: Vec::new(), skipped_nonhour_header: true });
+        return Ok(TrailingHours {
+            header,
+            hours: Vec::new(),
+            indices: Vec::new(),
+            skipped_nonhour_header: true,
+        });
     }
     let mut indices = Vec::with_capacity(24);
     for _ in 0..24 {
@@ -247,7 +271,12 @@ pub fn read_trailing_hour_segment(reader: &mut ByteReader) -> Result<TrailingHou
             hours.push((index, group));
         }
     }
-    Ok(TrailingHours { header, hours, indices, skipped_nonhour_header: false })
+    Ok(TrailingHours {
+        header,
+        hours,
+        indices,
+        skipped_nonhour_header: false,
+    })
 }
 
 /// Build a trailing-hour segment from per-hour column-group bytes.
@@ -286,17 +315,32 @@ mod tests {
         assert_eq!(u32_at(&body, 52), 1); // word0
         assert_eq!(i32_at(&body, 64), 2); // column id
         let g = read_column_group(&mut ByteReader::new(&body)).unwrap();
-        assert_eq!(g.rows.iter().map(|r| r.bid).collect::<Vec<_>>(), vec![Some(1.5), Some(2.5)]);
-        assert_eq!(g.rows.iter().map(|r| r.time_ms).collect::<Vec<_>>(), vec![None, None]);
+        assert_eq!(
+            g.rows.iter().map(|r| r.bid).collect::<Vec<_>>(),
+            vec![Some(1.5), Some(2.5)]
+        );
+        assert_eq!(
+            g.rows.iter().map(|r| r.time_ms).collect::<Vec<_>>(),
+            vec![None, None]
+        );
     }
 
     #[test]
     fn time_is_cumulative_i64() {
-        let body = make_column_group(&[(1, ColumnValues::I64(vec![1700000000000, 123, -23]))], 3, false, 0);
+        let body = make_column_group(
+            &[(1, ColumnValues::I64(vec![1700000000000, 123, -23]))],
+            3,
+            false,
+            0,
+        );
         let g = read_column_group(&mut ByteReader::new(&body)).unwrap();
         assert_eq!(
             g.rows.iter().map(|r| r.time_ms).collect::<Vec<_>>(),
-            vec![Some(1700000000000), Some(1700000000123), Some(1700000000100)]
+            vec![
+                Some(1700000000000),
+                Some(1700000000123),
+                Some(1700000000100)
+            ]
         );
     }
 
@@ -332,16 +376,33 @@ mod tests {
 
     #[test]
     fn duplicate_column_first_wins_and_unknown_preserved() {
-        let dup = make_column_group(&[(2, ColumnValues::F64(vec![1.5])), (2, ColumnValues::F64(vec![9.5]))], 1, false, 0);
+        let dup = make_column_group(
+            &[
+                (2, ColumnValues::F64(vec![1.5])),
+                (2, ColumnValues::F64(vec![9.5])),
+            ],
+            1,
+            false,
+            0,
+        );
         let g = read_column_group(&mut ByteReader::new(&dup)).unwrap();
         assert_eq!(g.rows[0].bid, Some(1.5));
         assert_eq!(g.descriptors.len(), 2);
 
         let unknown = make_column_group(&[(99, ColumnValues::U64(vec![17]))], 1, false, 0);
         let g = read_column_group(&mut ByteReader::new(&unknown)).unwrap();
-        assert_eq!(g.descriptors[0].decoded, 17u64.to_le_bytes());
+        assert_eq!(g.descriptors[0].compression, "opaque");
+        assert_eq!(
+            inflate_inner(&g.descriptors[0].encoded, 8).unwrap().0,
+            17u64.to_le_bytes()
+        );
         let r = &g.rows[0];
-        assert!(r.time_ms.is_none() && r.bid.is_none() && r.volume.is_none() && r.auxiliary_64.is_none());
+        assert!(
+            r.time_ms.is_none()
+                && r.bid.is_none()
+                && r.volume.is_none()
+                && r.auxiliary_64.is_none()
+        );
     }
 
     #[test]
@@ -364,11 +425,17 @@ mod tests {
     fn trailing_hours_independent_and_empty() {
         let mut groups = BTreeMap::new();
         groups.insert(0u8, make_column_group(&[bid(vec![1.5])], 1, false, 0));
-        groups.insert(23u8, make_column_group(&[bid(vec![9.5, 10.5])], 2, false, 0));
+        groups.insert(
+            23u8,
+            make_column_group(&[bid(vec![9.5, 10.5])], 2, false, 0),
+        );
         let packet = make_trailing_hour_segment(&groups).unwrap();
         let mut reader = ByteReader::new(&packet);
         let decoded = read_trailing_hour_segment(&mut reader).unwrap();
-        assert_eq!(decoded.hours.iter().map(|(i, _)| *i).collect::<Vec<_>>(), vec![0, 23]);
+        assert_eq!(
+            decoded.hours.iter().map(|(i, _)| *i).collect::<Vec<_>>(),
+            vec![0, 23]
+        );
         assert_eq!(decoded.hours[1].1.rows[0].bid, Some(9.5));
         assert_eq!(reader.position, packet.len());
 

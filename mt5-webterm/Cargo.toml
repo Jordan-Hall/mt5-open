@@ -2,7 +2,7 @@
 name = "mt5_webterm"
 version = "0.1.0"
 edition = "2024"
-description = "Native MetaQuotes web-terminal WebSocket client (no terminal64, no loginid)"
+description = "Native MetaQuotes web-terminal WebSocket client"
 
 [dependencies]
 aes = "0.8"

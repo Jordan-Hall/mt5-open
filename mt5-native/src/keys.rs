@@ -8,7 +8,7 @@
 use crate::cipher::startup_decrypt;
 use crate::crypto::password_hash;
 use crate::error::{ProtocolError, Result};
-use aes::cipher::{block_padding::NoPadding, BlockEncryptMut, KeyIvInit};
+use aes::cipher::{BlockEncryptMut, KeyIvInit, block_padding::NoPadding};
 use sha2::{Digest, Sha256};
 
 type Aes128CbcEnc = cbc::Encryptor<aes::Aes128>;
@@ -62,7 +62,9 @@ mod tests {
     use crate::hexutil::{decode, encode};
 
     fn digest() -> [u8; 16] {
-        decode("fb4823de3770686792d6b73aec3396f9").try_into().unwrap()
+        decode("fb4823de3770686792d6b73aec3396f9")
+            .try_into()
+            .unwrap()
     }
 
     #[test]
@@ -70,8 +72,14 @@ mod tests {
         // conformance_vectors key7-01.
         let d = digest();
         let tag7 = decode("00");
-        assert_eq!(encode(&session_key_padded_input(&tag7)), "00000000000000000000000000000000");
-        assert_eq!(encode(&derive_session_key_from_digest(&d, &tag7).unwrap()), "15643cc783ab813e27e8dd486ea7dfc5");
+        assert_eq!(
+            encode(&session_key_padded_input(&tag7)),
+            "00000000000000000000000000000000"
+        );
+        assert_eq!(
+            encode(&derive_session_key_from_digest(&d, &tag7).unwrap()),
+            "15643cc783ab813e27e8dd486ea7dfc5"
+        );
         assert!(derive_session_key_from_digest(&d, &[]).is_err());
     }
 

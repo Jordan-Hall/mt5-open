@@ -54,7 +54,12 @@ pub struct Frame {
 
 impl Frame {
     pub fn new(command: u8, sequence: u16, flags: u16, payload: Vec<u8>) -> Self {
-        Frame { command, sequence, flags, payload }
+        Frame {
+            command,
+            sequence,
+            flags,
+            payload,
+        }
     }
 
     pub fn is_final(&self) -> bool {
@@ -92,7 +97,10 @@ impl Default for FrameParser {
 
 impl FrameParser {
     pub fn new(max_payload: usize) -> Self {
-        FrameParser { max_payload, buffer: Vec::new() }
+        FrameParser {
+            max_payload,
+            buffer: Vec::new(),
+        }
     }
 
     /// Feed received bytes; return every complete frame now available.
@@ -115,7 +123,12 @@ impl FrameParser {
                 break;
             }
             let payload = self.buffer[consumed + HEADER_LEN..end].to_vec();
-            frames.push(Frame { command, sequence, flags, payload });
+            frames.push(Frame {
+                command,
+                sequence,
+                flags,
+                payload,
+            });
             consumed = end;
         }
         if consumed > 0 {
@@ -144,7 +157,10 @@ mod tests {
     fn header_layout_known_vector() {
         // Matches tests/core/test_mt5_protocol.py::test_header_layout.
         let f = Frame::new(0x32, 0x1234, 2, b"abc".to_vec());
-        assert_eq!(crate::hexutil::encode(&f.pack()), "320300000034120200616263");
+        assert_eq!(
+            crate::hexutil::encode(&f.pack()),
+            "320300000034120200616263"
+        );
         assert_eq!(HEADER_LEN, 9);
     }
 
@@ -185,5 +201,4 @@ mod tests {
         parser.feed(b"\x00\x01").unwrap();
         assert!(parser.finish().is_err());
     }
-
 }

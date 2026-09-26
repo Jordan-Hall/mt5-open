@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 
 use crate::error::{ProtocolError, Result};
-use crate::frame::{Frame, FINAL};
+use crate::frame::{FINAL, Frame};
 
 pub const MAX_MESSAGE: usize = 64 * 1024 * 1024;
 pub const MAX_PENDING: usize = 256;
@@ -35,7 +35,11 @@ impl Default for Reassembler {
 
 impl Reassembler {
     pub fn new(max_message: usize, max_pending: usize) -> Self {
-        Reassembler { max_message, max_pending, pending: HashMap::new() }
+        Reassembler {
+            max_message,
+            max_pending,
+            pending: HashMap::new(),
+        }
     }
 
     /// Push a frame together with its already-deciphered payload. Returns the
@@ -44,27 +48,39 @@ impl Reassembler {
         let prior_is_none = !self.pending.contains_key(&frame.sequence);
         if let Some((command, payload, _)) = self.pending.get(&frame.sequence) {
             if *command != frame.command {
-                return Err(ProtocolError::new("command changed within a fragmented message"));
+                return Err(ProtocolError::new(
+                    "command changed within a fragmented message",
+                ));
             }
             if payload.len() + plain_payload.len() > self.max_message {
-                return Err(ProtocolError::new("reassembled message exceeds configured size limit"));
+                return Err(ProtocolError::new(
+                    "reassembled message exceeds configured size limit",
+                ));
             }
         } else if plain_payload.len() > self.max_message {
-            return Err(ProtocolError::new("reassembled message exceeds configured size limit"));
+            return Err(ProtocolError::new(
+                "reassembled message exceeds configured size limit",
+            ));
         }
         if prior_is_none && frame.flags & FINAL == 0 && self.pending.len() >= self.max_pending {
             return Err(ProtocolError::new("too many pending fragmented messages"));
         }
-        let (command, mut payload, mut count) = self
-            .pending
-            .remove(&frame.sequence)
-            .unwrap_or((frame.command, Vec::new(), 0));
+        let (command, mut payload, mut count) =
+            self.pending
+                .remove(&frame.sequence)
+                .unwrap_or((frame.command, Vec::new(), 0));
         payload.extend_from_slice(plain_payload);
         count += 1;
         if frame.flags & FINAL != 0 {
-            Ok(Some(Message { command, sequence: frame.sequence, payload, fragments: count }))
+            Ok(Some(Message {
+                command,
+                sequence: frame.sequence,
+                payload,
+                fragments: count,
+            }))
         } else {
-            self.pending.insert(frame.sequence, (command, payload, count));
+            self.pending
+                .insert(frame.sequence, (command, payload, count));
             Ok(None)
         }
     }
@@ -94,12 +110,22 @@ mod tests {
         assert_eq!(a.push(&frame(12, 1, 0, b"a"), b"a").unwrap(), None);
         assert_eq!(
             a.push(&frame(10, 2, FINAL, b""), b"").unwrap(),
-            Some(Message { command: 10, sequence: 2, payload: vec![], fragments: 1 })
+            Some(Message {
+                command: 10,
+                sequence: 2,
+                payload: vec![],
+                fragments: 1
+            })
         );
         assert_eq!(a.push(&frame(12, 1, 0, b"b"), b"b").unwrap(), None);
         assert_eq!(
             a.push(&frame(12, 1, FINAL, b"c"), b"c").unwrap(),
-            Some(Message { command: 12, sequence: 1, payload: b"abc".to_vec(), fragments: 3 })
+            Some(Message {
+                command: 12,
+                sequence: 1,
+                payload: b"abc".to_vec(),
+                fragments: 3
+            })
         );
         a.finish().unwrap();
     }

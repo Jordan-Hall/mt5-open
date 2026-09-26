@@ -46,17 +46,42 @@ pub fn md5_padding(data: &[u8]) -> Vec<u8> {
 /// u32 words). With [`MD5_INITIAL`] this is standard MD5.
 pub fn md5_with_state(data: &[u8], initial_digest: &[u8; 16]) -> [u8; 16] {
     let mut state = [
-        u32::from_le_bytes([initial_digest[0], initial_digest[1], initial_digest[2], initial_digest[3]]),
-        u32::from_le_bytes([initial_digest[4], initial_digest[5], initial_digest[6], initial_digest[7]]),
-        u32::from_le_bytes([initial_digest[8], initial_digest[9], initial_digest[10], initial_digest[11]]),
-        u32::from_le_bytes([initial_digest[12], initial_digest[13], initial_digest[14], initial_digest[15]]),
+        u32::from_le_bytes([
+            initial_digest[0],
+            initial_digest[1],
+            initial_digest[2],
+            initial_digest[3],
+        ]),
+        u32::from_le_bytes([
+            initial_digest[4],
+            initial_digest[5],
+            initial_digest[6],
+            initial_digest[7],
+        ]),
+        u32::from_le_bytes([
+            initial_digest[8],
+            initial_digest[9],
+            initial_digest[10],
+            initial_digest[11],
+        ]),
+        u32::from_le_bytes([
+            initial_digest[12],
+            initial_digest[13],
+            initial_digest[14],
+            initial_digest[15],
+        ]),
     ];
 
     let padded = md5_padding(data);
     for chunk in padded.as_chunks::<64>().0 {
         let mut words = [0u32; 16];
         for (i, w) in words.iter_mut().enumerate() {
-            *w = u32::from_le_bytes([chunk[i * 4], chunk[i * 4 + 1], chunk[i * 4 + 2], chunk[i * 4 + 3]]);
+            *w = u32::from_le_bytes([
+                chunk[i * 4],
+                chunk[i * 4 + 1],
+                chunk[i * 4 + 2],
+                chunk[i * 4 + 3],
+            ]);
         }
         let (mut a, mut b, mut c, mut d) = (state[0], state[1], state[2], state[3]);
         for i in 0..64 {
@@ -107,7 +132,10 @@ mod tests {
         assert_eq!(encode(&md5(b"")), "d41d8cd98f00b204e9800998ecf8427e");
         assert_eq!(encode(&md5(b"a")), "0cc175b9c0f1b6a831c399e269772661");
         assert_eq!(encode(&md5(b"abc")), "900150983cd24fb0d6963f7d28e17f72");
-        assert_eq!(encode(&md5(b"message digest")), "f96b697d7cb7938d525a2f31aaf161d0");
+        assert_eq!(
+            encode(&md5(b"message digest")),
+            "f96b697d7cb7938d525a2f31aaf161d0"
+        );
         // Multi-block lengths around the padding boundary.
         for n in [15usize, 55, 56, 63, 64, 65, 119, 120, 121, 255, 1024] {
             let data: Vec<u8> = (0..n).map(|i| (i * 31 + 7) as u8).collect();

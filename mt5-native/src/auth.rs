@@ -5,10 +5,10 @@
 //! ([`crate::cipher::startup_encrypt_default`]). Reply parsers take already
 //! deciphered plaintext.
 
-use crate::cipher::{startup_encrypt, startup_encrypt_default, OTP_SALT};
+use crate::cipher::{OTP_SALT, startup_encrypt, startup_encrypt_default};
 use crate::crypto::{challenge_response, dotnet_utf16, hardware_id, password_hash};
 use crate::error::{ProtocolError, Result};
-use crate::frame::{Frame, FINAL};
+use crate::frame::{FINAL, Frame};
 use crate::md5::md5;
 use crate::tlv::{encode_tlvs, parse_tlvs};
 
@@ -67,9 +67,14 @@ pub fn make_auth(
 /// Build the plaintext command-2 certificate continuation. The supplied
 /// signature must already be an RSA PKCS#1 v1.5 SHA-1 signature of the server
 /// challenge. Only its wire byte reversal is performed here; no key is read.
-pub fn certificate_continuation_payload(signature: &[u8], certificate_der: &[u8]) -> Result<Vec<u8>> {
+pub fn certificate_continuation_payload(
+    signature: &[u8],
+    certificate_der: &[u8],
+) -> Result<Vec<u8>> {
     if signature.is_empty() || certificate_der.is_empty() {
-        return Err(ProtocolError::new("certificate and signature must be nonempty"));
+        return Err(ProtocolError::new(
+            "certificate and signature must be nonempty",
+        ));
     }
     let mut body = vec![0; 16];
     body.extend(encode_tlvs(&[
@@ -91,7 +96,9 @@ pub struct Challenge {
 /// Parse the 32-byte plaintext challenge reply (`<h i h 16s 4h>`).
 pub fn parse_challenge(payload: &[u8]) -> Result<Challenge> {
     if payload.len() != 32 {
-        return Err(ProtocolError::new("plaintext challenge reply must be exactly 32 bytes"));
+        return Err(ProtocolError::new(
+            "plaintext challenge reply must be exactly 32 bytes",
+        ));
     }
     let unknown_i16_0 = i16::from_le_bytes([payload[0], payload[1]]);
     let status = i32::from_le_bytes([payload[2], payload[3], payload[4], payload[5]]);
@@ -102,7 +109,13 @@ pub fn parse_challenge(payload: &[u8]) -> Result<Challenge> {
     for (i, t) in tail.iter_mut().enumerate() {
         *t = i16::from_le_bytes([payload[24 + i * 2], payload[24 + i * 2 + 1]]);
     }
-    Ok(Challenge { unknown_i16_0, status, unknown_i16_6, challenge, unknown_tail_i16: tail })
+    Ok(Challenge {
+        unknown_i16_0,
+        status,
+        unknown_i16_6,
+        challenge,
+        unknown_tail_i16: tail,
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -136,7 +149,11 @@ impl AuthResult {
             server_build: self.server_build,
             record_build: self.secondary_build,
             certificate_required: self.status == 1003,
-            tags: self.tlvs.iter().map(|(tag, value)| (*tag, value.len())).collect(),
+            tags: self
+                .tlvs
+                .iter()
+                .map(|(tag, value)| (*tag, value.len()))
+                .collect(),
         }
     }
 }
@@ -145,9 +162,12 @@ impl AuthResult {
 /// (`<i i i q i h h 16s>`) followed by a TLV list.
 pub fn parse_auth_result(payload: &[u8]) -> Result<AuthResult> {
     if payload.len() < 44 {
-        return Err(ProtocolError::new("plaintext authentication result is shorter than 44 bytes"));
+        return Err(ProtocolError::new(
+            "plaintext authentication result is shorter than 44 bytes",
+        ));
     }
-    let g32 = |o: usize| i32::from_le_bytes([payload[o], payload[o + 1], payload[o + 2], payload[o + 3]]);
+    let g32 =
+        |o: usize| i32::from_le_bytes([payload[o], payload[o + 1], payload[o + 2], payload[o + 3]]);
     let mut q = [0u8; 8];
     q.copy_from_slice(&payload[12..20]);
     let mut opaque = [0u8; 16];
@@ -177,7 +197,12 @@ mod tests {
         bytes[4..8].copy_from_slice(&1003i32.to_le_bytes());
         bytes[24..26].copy_from_slice(&5500i16.to_le_bytes());
         bytes[26..28].copy_from_slice(&5499i16.to_le_bytes());
-        bytes.extend(encode_tlvs(&[(7, b"secret-key".to_vec()), (28, b"secret-input".to_vec()), (28, vec![5]), (35, vec![6])]));
+        bytes.extend(encode_tlvs(&[
+            (7, b"secret-key".to_vec()),
+            (28, b"secret-input".to_vec()),
+            (28, vec![5]),
+            (35, vec![6]),
+        ]));
         let summary = parse_auth_result(&bytes).unwrap().summary();
         assert_eq!(summary.status, 1003);
         assert!(summary.certificate_required);
@@ -189,12 +214,20 @@ mod tests {
     #[test]
     fn hello_fixture() {
         // conformance_vectors hello-01.
-        let hw: [u8; 16] = decode("cf7445431d288e5e9c813a2af6c8ea79").try_into().unwrap();
+        let hw: [u8; 16] = decode("cf7445431d288e5e9c813a2af6c8ea79")
+            .try_into()
+            .unwrap();
         let f = make_hello(12345678, 1, 5500, Some(hw), 90, 305419896);
         assert_eq!(f.command, 0);
         assert_eq!(f.flags, FINAL);
-        assert_eq!(encode(&f.pack()), "0022000000010002001bd12c9184c1ff4d74adb5b3d48f1f0301f46eeea8ea46f257ba34faf1d56e90e589");
-        assert_eq!(encode(&startup_decrypt_default(&f.payload)), "5a007c154d514e61bc0000000000cf7445431d288e5e9c813a2af6c8ea7978563412");
+        assert_eq!(
+            encode(&f.pack()),
+            "0022000000010002001bd12c9184c1ff4d74adb5b3d48f1f0301f46eeea8ea46f257ba34faf1d56e90e589"
+        );
+        assert_eq!(
+            encode(&startup_decrypt_default(&f.payload)),
+            "5a007c154d514e61bc0000000000cf7445431d288e5e9c813a2af6c8ea7978563412"
+        );
     }
 
     #[test]
@@ -207,18 +240,48 @@ mod tests {
     #[test]
     fn auth_fixture() {
         // conformance_vectors auth-basic.
-        let challenge: [u8; 16] = decode("000102030405060708090a0b0c0d0e0f").try_into().unwrap();
-        let client: [u8; 16] = decode("101112131415161718191a1b1c1d1e1f").try_into().unwrap();
-        let f = make_auth(12345678, "ExamplePassword", &challenge, 2, &client, 4660, None);
-        assert_eq!(encode(&f.pack()), "0122000000020002007539d2f4e3124fe83ad20414147b8ede160f9ee70d0aee0e9fcfcfd4efb1ee5b8227");
-        assert_eq!(encode(&startup_decrypt_default(&f.payload)), "34126adecffd4d9459a1de1621b4323809c3101112131415161718191a1b1c1d1e1f");
+        let challenge: [u8; 16] = decode("000102030405060708090a0b0c0d0e0f")
+            .try_into()
+            .unwrap();
+        let client: [u8; 16] = decode("101112131415161718191a1b1c1d1e1f")
+            .try_into()
+            .unwrap();
+        let f = make_auth(
+            12345678,
+            "ExamplePassword",
+            &challenge,
+            2,
+            &client,
+            4660,
+            None,
+        );
+        assert_eq!(
+            encode(&f.pack()),
+            "0122000000020002007539d2f4e3124fe83ad20414147b8ede160f9ee70d0aee0e9fcfcfd4efb1ee5b8227"
+        );
+        assert_eq!(
+            encode(&startup_decrypt_default(&f.payload)),
+            "34126adecffd4d9459a1de1621b4323809c3101112131415161718191a1b1c1d1e1f"
+        );
     }
 
     #[test]
     fn auth_otp_tlv18() {
-        let challenge: [u8; 16] = decode("000102030405060708090a0b0c0d0e0f").try_into().unwrap();
-        let client: [u8; 16] = decode("101112131415161718191a1b1c1d1e1f").try_into().unwrap();
-        let f = make_auth(12345678, "ExamplePassword", &challenge, 4, &client, 42, Some("123456"));
+        let challenge: [u8; 16] = decode("000102030405060708090a0b0c0d0e0f")
+            .try_into()
+            .unwrap();
+        let client: [u8; 16] = decode("101112131415161718191a1b1c1d1e1f")
+            .try_into()
+            .unwrap();
+        let f = make_auth(
+            12345678,
+            "ExamplePassword",
+            &challenge,
+            4,
+            &client,
+            42,
+            Some("123456"),
+        );
         let plain = startup_decrypt_default(&f.payload);
         let (tag, value) = parse_tlvs(&plain[34..]).unwrap().remove(0);
         assert_eq!(tag, 18);
@@ -228,7 +291,10 @@ mod tests {
         ki.extend_from_slice(&OTP_SALT);
         ki.push(0);
         let key = md5(&ki);
-        assert_eq!(crate::cipher::startup_decrypt(&value, &key).unwrap(), dotnet_utf16("123456\0", None));
+        assert_eq!(
+            crate::cipher::startup_decrypt(&value, &key).unwrap(),
+            dotnet_utf16("123456\0", None)
+        );
     }
 
     #[test]
@@ -246,7 +312,13 @@ mod tests {
         assert_eq!(&c.challenge, &(0..16u8).collect::<Vec<_>>()[..]);
 
         let items = vec![
-            (0u8, "server".encode_utf16().flat_map(|u| u.to_le_bytes()).collect::<Vec<u8>>()),
+            (
+                0u8,
+                "server"
+                    .encode_utf16()
+                    .flat_map(|u| u.to_le_bytes())
+                    .collect::<Vec<u8>>(),
+            ),
             (7u8, (0..32u8).collect()),
             (35u8, b"opaque".to_vec()),
         ];

@@ -11,10 +11,9 @@
 //!   fallback ([`inflate_inner`]).
 
 use crate::error::{ProtocolError, Result};
-use flate2::read::{DeflateDecoder, ZlibDecoder};
 use flate2::write::{DeflateEncoder, ZlibEncoder};
-use flate2::Compression;
-use std::io::{Read, Write};
+use flate2::{Compression, Decompress, FlushDecompress, Status};
+use std::io::Write;
 
 pub const MAX_MESSAGE: usize = 64 * 1024 * 1024;
 
@@ -71,7 +70,9 @@ pub fn lzo1x_decompress(data: &[u8], expected_size: usize, max_output: usize) ->
         ($length:expr) => {{
             let length: usize = $length;
             if length > data.len() - pos || out.len() + length > expected_size {
-                return Err(ProtocolError::new("LZO literal exceeds input or declared output"));
+                return Err(ProtocolError::new(
+                    "LZO literal exceeds input or declared output",
+                ));
             }
             out.extend_from_slice(&data[pos..pos + length]);
             pos += length;
@@ -120,7 +121,9 @@ pub fn lzo1x_decompress(data: &[u8], expected_size: usize, max_output: usize) ->
             following = operand & 3;
             if distance == 16384 {
                 if token != 17 || operand != 0 || pos != data.len() || out.len() != expected_size {
-                    return Err(ProtocolError::new("invalid LZO termination or output length"));
+                    return Err(ProtocolError::new(
+                        "invalid LZO termination or output length",
+                    ));
                 }
                 return Ok(out);
             }
@@ -166,12 +169,16 @@ pub fn lzo1x_store(data: &[u8]) -> Vec<u8> {
 /// Parse the `<i i>` size envelope and LZO1X-decompress the remainder.
 pub fn decompress_payload(payload: &[u8], max_output: usize) -> Result<Vec<u8>> {
     if payload.len() < 8 {
-        return Err(ProtocolError::new("compressed payload lacks its two size fields"));
+        return Err(ProtocolError::new(
+            "compressed payload lacks its two size fields",
+        ));
     }
     let expected = i32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
     let compressed = i32::from_le_bytes([payload[4], payload[5], payload[6], payload[7]]);
     if compressed < 0 || compressed as usize != payload.len() - 8 {
-        return Err(ProtocolError::new("compressed payload length does not match its envelope"));
+        return Err(ProtocolError::new(
+            "compressed payload length does not match its envelope",
+        ));
     }
     if expected < 0 {
         return Err(ProtocolError::new("invalid decompressed size"));
@@ -182,7 +189,9 @@ pub fn decompress_payload(payload: &[u8], max_output: usize) -> Result<Vec<u8>> 
 /// Wrap `plain_payload` in the size envelope with a literal-only LZO1X body.
 pub fn make_compressed_payload(plain_payload: &[u8]) -> Result<Vec<u8>> {
     if plain_payload.len() > MAX_MESSAGE {
-        return Err(ProtocolError::new("payload exceeds configured output limit"));
+        return Err(ProtocolError::new(
+            "payload exceeds configured output limit",
+        ));
     }
     let encoded = lzo1x_store(plain_payload);
     let mut out = Vec::with_capacity(8 + encoded.len());
@@ -197,8 +206,8 @@ pub fn make_compressed_payload(plain_payload: &[u8]) -> Result<Vec<u8>> {
 /// Rejects incomplete streams, trailing bytes, and output beyond `limit`.
 pub fn inflate_inner(data: &[u8], limit: usize) -> Result<(Vec<u8>, &'static str)> {
     let mut errors = Vec::new();
-    for (zlib_header, name) in [(true, "zlib"), (false, "raw_deflate")] {
-        match try_inflate(data, limit, zlib_header) {
+    for (header, name) in [(true, "zlib"), (false, "raw_deflate")] {
+        match try_inflate(data, limit, header) {
             Ok(v) => return Ok((v, name)),
             Err(e) => errors.push(e.0),
         }
@@ -209,32 +218,39 @@ pub fn inflate_inner(data: &[u8], limit: usize) -> Result<(Vec<u8>, &'static str
     )))
 }
 
-fn try_inflate(data: &[u8], limit: usize, zlib_header: bool) -> Result<Vec<u8>> {
-    // Read at most limit+1 bytes so an over-budget stream is caught, then confirm
-    // the whole input was consumed (no trailing compressed bytes).
+fn try_inflate(data: &[u8], limit: usize, header: bool) -> Result<Vec<u8>> {
     let mut out = Vec::new();
-    let consumed = if zlib_header {
-        let mut dec = ZlibDecoder::new(data);
-        dec.by_ref()
-            .take(limit as u64 + 1)
-            .read_to_end(&mut out)
+    let mut decoder = Decompress::new(header);
+    loop {
+        let before_in = decoder.total_in();
+        let before_out = decoder.total_out();
+        let mut buffer = [0u8; 8192];
+        let capacity = buffer
+            .len()
+            .min(limit.saturating_sub(out.len()).saturating_add(1));
+        let status = decoder
+            .decompress(
+                &data[before_in as usize..],
+                &mut buffer[..capacity],
+                FlushDecompress::None,
+            )
             .map_err(|e| ProtocolError::new(e.to_string()))?;
-        dec.total_in() as usize
-    } else {
-        let mut dec = DeflateDecoder::new(data);
-        dec.by_ref()
-            .take(limit as u64 + 1)
-            .read_to_end(&mut out)
-            .map_err(|e| ProtocolError::new(e.to_string()))?;
-        dec.total_in() as usize
-    };
-    if out.len() > limit {
-        return Err(ProtocolError::new("inflation budget exceeded"));
+        out.extend_from_slice(&buffer[..(decoder.total_out() - before_out) as usize]);
+        if out.len() > limit {
+            return Err(ProtocolError::new("inflation budget exceeded"));
+        }
+        if status == Status::StreamEnd {
+            break;
+        }
+        if decoder.total_in() == before_in && decoder.total_out() == before_out {
+            return Err(ProtocolError::new("incomplete compressed stream"));
+        }
     }
-    if consumed != data.len() {
-        return Err(ProtocolError::new("trailing compressed bytes"));
+    let offset = decoder.total_in() as usize;
+    if offset == data.len() {
+        return Ok(out);
     }
-    Ok(out)
+    Err(ProtocolError::new("trailing compressed bytes"))
 }
 
 /// Compress with zlib (or raw DEFLATE when `raw`). Used to build history
@@ -262,17 +278,31 @@ mod tests {
         let mut encoded = vec![(data.len() + 17) as u8];
         encoded.extend_from_slice(data);
         encoded.extend_from_slice(&[0x11, 0, 0]);
-        assert_eq!(lzo1x_decompress(&encoded, data.len(), MAX_MESSAGE).unwrap(), data);
-        assert_eq!(lzo1x_decompress(&[0x11, 0, 0], 0, MAX_MESSAGE).unwrap(), b"");
+        assert_eq!(
+            lzo1x_decompress(&encoded, data.len(), MAX_MESSAGE).unwrap(),
+            data
+        );
+        assert_eq!(
+            lzo1x_decompress(&[0x11, 0, 0], 0, MAX_MESSAGE).unwrap(),
+            b""
+        );
         assert!(lzo1x_decompress(&encoded, 4, MAX_MESSAGE).is_err());
     }
 
     #[test]
     fn lzo_store_roundtrip_boundaries() {
-        for size in [0usize, 1, 2, 3, 4, 17, 18, 237, 238, 239, 272, 273, 274, 528, 10000] {
+        for size in [
+            0usize, 1, 2, 3, 4, 17, 18, 237, 238, 239, 272, 273, 274, 528, 10000,
+        ] {
             let data: Vec<u8> = (0..size).map(|i| (i * 53 + 11) as u8).collect();
-            assert_eq!(lzo1x_decompress(&lzo1x_store(&data), size, MAX_MESSAGE).unwrap(), data);
-            assert_eq!(decompress_payload(&make_compressed_payload(&data).unwrap(), MAX_MESSAGE).unwrap(), data);
+            assert_eq!(
+                lzo1x_decompress(&lzo1x_store(&data), size, MAX_MESSAGE).unwrap(),
+                data
+            );
+            assert_eq!(
+                decompress_payload(&make_compressed_payload(&data).unwrap(), MAX_MESSAGE).unwrap(),
+                data
+            );
         }
     }
 
@@ -298,5 +328,16 @@ mod tests {
         // Budget enforcement.
         let comp = deflate(&data, false);
         assert!(inflate_inner(&comp, 4).is_err());
+    }
+    #[test]
+    fn incomplete_and_concatenated_streams_are_rejected() {
+        for raw in [false, true] {
+            let stream = deflate(b"complete data", raw);
+            assert_eq!(inflate_inner(&stream, 13).unwrap().0, b"complete data");
+            for end in 0..stream.len() {
+                assert!(inflate_inner(&stream[..end], 13).is_err());
+            }
+            assert!(inflate_inner(&[stream.as_slice(), stream.as_slice()].concat(), 26).is_err());
+        }
     }
 }

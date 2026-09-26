@@ -3,25 +3,39 @@ name = "mt5_session"
 version = "0.1.0"
 edition = "2024"
 
-# The socket for the mt5-native codec.
-#
-# It lives in its own crate so the codec keeps the property that makes it safe
-# to reason about: no networking, anywhere in it. A frame builder that cannot
-# reach a socket cannot place an order by accident.
-
 [dependencies]
 mt5_native = { path = "../mt5-native" }
-# The loginid service is an HTTPS POST, so a TLS-capable client is needed for
-# it -- but only under `live`, so the default build stays networking-free.
-ureq = { version = "2", optional = true }
+getrandom = { version = "0.2", optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
 
 [features]
 # Nothing here connects to anything unless this is on, and the codec's own
 # tripwire has to be satisfied as well.
-live = ["mt5_native/live", "dep:ureq"]
+live = ["mt5_native/live", "dep:getrandom", "dep:serde", "dep:serde_json"]
 
 # The probe opens a socket, so it only builds under `live`; without the feature
 # the default build skips it instead of failing to resolve Session.
 [[example]]
 name = "auth_probe"
 required-features = ["live"]
+
+[[example]]
+name = "market_probe"
+required-features = ["live"]
+
+[[example]]
+name = "demo_trade_probe"
+required-features = ["live"]
+
+[[example]]
+name = "reconnect_probe"
+required-features = ["live"]
+
+[[example]]
+name = "history_probe"
+required-features = ["live"]
+
+[[example]]
+name = 'advanced_trade_probe'
+required-features = ['live']

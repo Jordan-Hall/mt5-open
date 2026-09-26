@@ -40,7 +40,7 @@ pub const TRADE_FIELDS: [(&str, Kind); 34] = [
     ("opaque_017", Kind::Bytes(72)),
     ("transfer_login", Kind::U64),
     ("text_018", Kind::Bytes(128)),
-    ("currency", Kind::Bytes(64)),
+    ("symbol", Kind::Bytes(64)),
     ("volume_units", Kind::U64),
     ("unknown_01a", Kind::I64),
     ("digits", Kind::I32),
@@ -57,15 +57,15 @@ pub const TRADE_FIELDS: [(&str, Kind); 34] = [
     ("placed_type", Kind::I32),
     ("opaque_01f", Kind::Bytes(16)),
     ("price", Kind::F64),
-    ("order_price", Kind::F64),
+    ("stop_limit_price", Kind::F64),
     ("stop_loss", Kind::F64),
     ("take_profit", Kind::F64),
     ("deviation", Kind::U64),
     ("opaque_020", Kind::Bytes(32)),
     ("expert_id", Kind::I64),
     ("comment", Kind::Bytes(64)),
-    ("deal_ticket", Kind::I64),
-    ("by_close_ticket", Kind::I64),
+    ("position_ticket", Kind::I64),
+    ("opposite_position_ticket", Kind::I64),
     ("opaque_021", Kind::Bytes(112)),
 ];
 
@@ -126,7 +126,9 @@ impl TradeRecord {
                 | (Value::F64(_), Kind::F64)
         ) || matches!((&value, kind), (Value::Bytes(b), Kind::Bytes(n)) if b.len() == n);
         if !ok {
-            return Err(ProtocolError::new(format!("type/size mismatch for field {name}")));
+            return Err(ProtocolError::new(format!(
+                "type/size mismatch for field {name}"
+            )));
         }
         if let Some(slot) = self.fields.iter_mut().find(|(n, _)| *n == name) {
             slot.1 = value;
@@ -151,7 +153,11 @@ pub fn pack_trade_record(record: &TradeRecord) -> Result<Vec<u8>> {
             (Kind::U64, Value::U64(v)) => out.extend_from_slice(&v.to_le_bytes()),
             (Kind::F64, Value::F64(v)) => out.extend_from_slice(&v.to_le_bytes()),
             (Kind::Bytes(n), Value::Bytes(b)) if b.len() == *n => out.extend_from_slice(b),
-            _ => return Err(ProtocolError::new(format!("invalid trade record field: {name}"))),
+            _ => {
+                return Err(ProtocolError::new(format!(
+                    "invalid trade record field: {name}"
+                )));
+            }
         }
     }
     Ok(out)
@@ -209,6 +215,12 @@ pub struct MarketTradeFields {
     pub deviation: u64,
     pub expert_id: i64,
     pub comment: String,
+    pub order_ticket: i64,
+    pub position_ticket: i64,
+    pub opposite_position_ticket: i64,
+    pub stop_limit_price: f64,
+    pub expiration_time: i64,
+    pub placed_type: i32,
 }
 
 /// Build the canonical 800-byte trade record from high-level fields.
@@ -217,7 +229,7 @@ pub fn build_trade_record(f: &MarketTradeFields) -> Result<Vec<u8>> {
     r.set("request_id", Value::I32(f.request_id))?;
     r.set("trade_type", Value::I32(f.trade_type))?;
     r.set("login", Value::U64(f.login))?;
-    r.set("currency", Value::Bytes(utf16_field(&f.symbol, 64)))?;
+    r.set("symbol", Value::Bytes(utf16_field(&f.symbol, 64)))?;
     r.set("volume_units", Value::U64(f.volume_units))?;
     r.set("digits", Value::I32(f.digits))?;
     r.set("order_type", Value::I32(f.order_type))?;
@@ -229,6 +241,15 @@ pub fn build_trade_record(f: &MarketTradeFields) -> Result<Vec<u8>> {
     r.set("deviation", Value::U64(f.deviation))?;
     r.set("expert_id", Value::I64(f.expert_id))?;
     r.set("comment", Value::Bytes(utf16_field(&f.comment, 64)))?;
+    r.set("order_ticket", Value::I64(f.order_ticket))?;
+    r.set("position_ticket", Value::I64(f.position_ticket))?;
+    r.set(
+        "opposite_position_ticket",
+        Value::I64(f.opposite_position_ticket),
+    )?;
+    r.set("stop_limit_price", Value::F64(f.stop_limit_price))?;
+    r.set("expiration_time", Value::I64(f.expiration_time))?;
+    r.set("placed_type", Value::I32(f.placed_type))?;
     pack_trade_record(&r)
 }
 
@@ -258,6 +279,30 @@ mod tests {
     #[test]
     fn record_size_is_800() {
         assert_eq!(trade_record_size(), 800);
+    }
+
+    #[test]
+    fn position_and_order_mutations_encode_their_own_ticket_fields() {
+        let bytes = build_trade_record(&MarketTradeFields {
+            order_ticket: 123,
+            position_ticket: 456,
+            opposite_position_ticket: 789,
+            stop_limit_price: 1.25,
+            expiration_time: 1_900_000_000,
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(i64::from_le_bytes(bytes[400..408].try_into().unwrap()), 123);
+        assert_eq!(i64::from_le_bytes(bytes[672..680].try_into().unwrap()), 456);
+        assert_eq!(i64::from_le_bytes(bytes[680..688].try_into().unwrap()), 789);
+        assert_eq!(
+            f64::from_le_bytes(bytes[536..544].try_into().unwrap()),
+            1.25
+        );
+        assert_eq!(
+            i64::from_le_bytes(bytes[480..488].try_into().unwrap()),
+            1_900_000_000
+        );
     }
 
     #[test]
@@ -321,7 +366,9 @@ pub struct TradeUpdate35 {
 /// base excludes the count word.
 pub fn parse_trade_update_35(body: &[u8]) -> Result<TradeUpdate35> {
     if body.len() < 5 {
-        return Err(ProtocolError::new("trade update too short for subtype + count"));
+        return Err(ProtocolError::new(
+            "trade update too short for subtype + count",
+        ));
     }
     if body[0] != 35 {
         return Err(ProtocolError::new("not a subtype-35 trade update"));
@@ -333,11 +380,15 @@ pub fn parse_trade_update_35(body: &[u8]) -> Result<TradeUpdate35> {
     let remaining = body.len() - 5;
     let count_usize = count as usize;
     if !remaining.is_multiple_of(count_usize) {
-        return Err(ProtocolError::new("trade update body not divisible by count"));
+        return Err(ProtocolError::new(
+            "trade update body not divisible by count",
+        ));
     }
     let stride = remaining / count_usize;
     if stride < 1212 {
-        return Err(ProtocolError::new("trade update stride below the 1212-byte base"));
+        return Err(ProtocolError::new(
+            "trade update stride below the 1212-byte base",
+        ));
     }
     let mut records = Vec::with_capacity(count_usize);
     let mut off = 5;
@@ -351,5 +402,9 @@ pub fn parse_trade_update_35(body: &[u8]) -> Result<TradeUpdate35> {
         });
         off += stride;
     }
-    Ok(TradeUpdate35 { count, stride, records })
+    Ok(TradeUpdate35 {
+        count,
+        stride,
+        records,
+    })
 }

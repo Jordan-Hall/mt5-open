@@ -16,13 +16,16 @@
 //! Invalid replies / rejected statuses ─▶ Failed
 //! ```
 
-use crate::auth::{AuthResult, certificate_continuation_payload, make_auth, make_hello, parse_auth_result, parse_challenge};
+use crate::auth::{
+    AuthResult, certificate_continuation_payload, make_auth, make_hello, parse_auth_result,
+    parse_challenge,
+};
 use crate::cipher::SessionCipher;
 use crate::crypto::hardware_id;
 use crate::error::{ProtocolError, Result};
-use crate::frame::{command, Frame, FINAL};
+use crate::frame::{FINAL, Frame, command};
 use crate::keys::{derive_session_key, derive_trade_key};
-use crate::login::{make_sync_request, LoginValues};
+use crate::login::{LoginValues, make_sync_request};
 use crate::metadata::environment_metadata;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,7 +60,12 @@ impl Handshake {
         Self::with_device_id(login, password, client_build, hardware_id(login))
     }
 
-    pub fn with_device_id(login: u64, password: &str, client_build: u16, device_id: [u8; 16]) -> Self {
+    pub fn with_device_id(
+        login: u64,
+        password: &str,
+        client_build: u16,
+        device_id: [u8; 16],
+    ) -> Self {
         Handshake {
             login,
             password: password.to_string(),
@@ -116,7 +124,14 @@ impl Handshake {
     /// Step 1 — the hello (command 0) request frame.
     pub fn hello(&mut self, nonce_byte: u8, random_word: u32, sequence: u16) -> Result<Frame> {
         self.expect(Phase::Init)?;
-        let f = make_hello(self.login, sequence, self.client_build, Some(self.device_id), nonce_byte, random_word);
+        let f = make_hello(
+            self.login,
+            sequence,
+            self.client_build,
+            Some(self.device_id),
+            nonce_byte,
+            random_word,
+        );
         self.phase = Phase::HelloSent;
         Ok(f)
     }
@@ -126,7 +141,10 @@ impl Handshake {
         self.expect(Phase::HelloSent)?;
         let reply = parse_challenge(plaintext).map_err(|e| self.fail(e))?;
         if reply.status != 0 {
-            return Err(self.fail(ProtocolError::new(format!("challenge rejected with status {}", reply.status))));
+            return Err(self.fail(ProtocolError::new(format!(
+                "challenge rejected with status {}",
+                reply.status
+            ))));
         }
         self.server_challenge = Some(reply.challenge);
         self.phase = Phase::ChallengeReceived;
@@ -134,12 +152,26 @@ impl Handshake {
     }
 
     /// Step 3 — the authentication (command 1) request frame.
-    pub fn auth(&mut self, client_challenge: &[u8; 16], nonce_word: u16, otp: Option<&str>, sequence: u16) -> Result<Frame> {
+    pub fn auth(
+        &mut self,
+        client_challenge: &[u8; 16],
+        nonce_word: u16,
+        otp: Option<&str>,
+        sequence: u16,
+    ) -> Result<Frame> {
         self.expect(Phase::ChallengeReceived)?;
         let challenge = self
             .server_challenge
             .ok_or_else(|| ProtocolError::new("no server challenge stored"))?;
-        let f = make_auth(self.login, &self.password, &challenge, sequence, client_challenge, nonce_word, otp);
+        let f = make_auth(
+            self.login,
+            &self.password,
+            &challenge,
+            sequence,
+            client_challenge,
+            nonce_word,
+            otp,
+        );
         self.phase = Phase::AuthSent;
         Ok(f)
     }
@@ -151,7 +183,10 @@ impl Handshake {
         self.expect(Phase::AuthSent)?;
         let result = parse_auth_result(plaintext).map_err(|e| self.fail(e))?;
         if result.status != 0 && result.status != 1003 {
-            return Err(self.fail(ProtocolError::new(format!("authentication rejected with status {}", result.status))));
+            return Err(self.fail(ProtocolError::new(format!(
+                "authentication rejected with status {}",
+                result.status
+            ))));
         }
         if result.server_build <= 0 {
             return Err(self.fail(ProtocolError::new("unsupported nonpositive server build")));
@@ -162,18 +197,29 @@ impl Handshake {
         // earlier values, but an invalid earlier key cannot be silently ignored.
         for (tag, value) in &result.tlvs {
             match tag {
-                7 => session_key = Some(derive_session_key(self.login, &self.password, value).map_err(|e| self.fail(e))?),
+                7 => {
+                    session_key = Some(
+                        derive_session_key(self.login, &self.password, value)
+                            .map_err(|e| self.fail(e))?,
+                    )
+                }
                 27 => trade_key = Some(derive_trade_key(self.login, &self.password, value)),
                 _ => {}
             }
         }
-        let session_key = session_key.ok_or_else(|| self.fail(ProtocolError::new("auth result missing session-key TLV 7")))?;
+        let session_key = session_key.ok_or_else(|| {
+            self.fail(ProtocolError::new("auth result missing session-key TLV 7"))
+        })?;
         let cipher = SessionCipher::new(&session_key).map_err(|e| self.fail(e))?;
         self.session_cipher = Some(cipher);
         self.session_key = Some(session_key);
         self.trade_key = trade_key;
         self.server_build = Some(result.server_build);
-        self.phase = if result.status == 1003 { Phase::CertificateRequired } else { Phase::SessionKeysReady };
+        self.phase = if result.status == 1003 {
+            Phase::CertificateRequired
+        } else {
+            Phase::SessionKeysReady
+        };
         self.auth_result = Some(result);
         Ok(())
     }
@@ -183,31 +229,66 @@ impl Handshake {
     /// The caller handles key access/signing; this codec does not enroll,
     /// parse PFX, or verify ownership of a certificate. No reply wait is
     /// invented: the covered profile sends sync next on the same TX cipher.
-    pub fn certificate_continuation(&mut self, signature: &[u8], certificate_der: &[u8], sequence: u16) -> Result<Frame> {
+    pub fn certificate_continuation(
+        &mut self,
+        signature: &[u8],
+        certificate_der: &[u8],
+        sequence: u16,
+    ) -> Result<Frame> {
         self.expect(Phase::CertificateRequired)?;
         let body = certificate_continuation_payload(signature, certificate_der)?;
-        let cipher = self.session_cipher.as_mut().ok_or_else(|| ProtocolError::new("session cipher not initialized"))?;
+        let cipher = self
+            .session_cipher
+            .as_mut()
+            .ok_or_else(|| ProtocolError::new("session cipher not initialized"))?;
         let ciphertext = cipher.encrypt(&body);
         self.phase = Phase::SessionKeysReady;
-        Ok(Frame::new(command::CERT_CONTINUATION, sequence, FINAL, ciphertext))
+        Ok(Frame::new(
+            command::CERT_CONTINUATION,
+            sequence,
+            FINAL,
+            ciphertext,
+        ))
     }
 
     /// Exact challenge bytes an external certificate signer must sign.
     pub fn certificate_challenge(&self) -> Result<&[u8; 16]> {
         self.expect(Phase::CertificateRequired)?;
-        self.server_challenge.as_ref().ok_or_else(|| ProtocolError::new("no server challenge stored"))
+        self.server_challenge
+            .as_ref()
+            .ok_or_else(|| ProtocolError::new("no server challenge stored"))
     }
 
     /// The environment metadata this client would present in tag 127.
     pub fn generated_environment(&self) -> String {
-        environment_metadata(&self.device_id, self.client_build as u32)
+        environment_metadata(self.client_build as u32)
     }
 
-    /// Step 5 — the command-12 synchronization request, session-encoded. Pass
-    /// the login values (from the F28/F35 wrapper) and an optional environment
-    /// string (the modern profile); `None` generates the documented metadata.
-    /// LoginValues are externally resolved inputs, not calculated here. The
-    /// caller must resolve any required tag-28/35 values for this connection.
+    /// Bind observed challenge answers to this authenticated connection.
+    pub fn login_values(&self, answer28: u64, answer35: u64) -> Result<LoginValues> {
+        self.expect(Phase::SessionKeysReady)?;
+        Ok(crate::login::login_value_wrapper(
+            self.login,
+            self.client_build as u32,
+            self.server_build
+                .ok_or_else(|| ProtocolError::new("missing server build"))? as u32,
+            self.server_challenge
+                .as_ref()
+                .ok_or_else(|| ProtocolError::new("missing server challenge"))?,
+            answer28,
+            answer35,
+        ))
+    }
+
+    /// Transfer the TX cipher after synchronization without resetting its state.
+    pub fn take_send_cipher(&mut self) -> Result<SessionCipher> {
+        self.expect(Phase::SyncSent)?;
+        self.session_cipher
+            .take()
+            .ok_or_else(|| ProtocolError::new("send cipher already transferred"))
+    }
+
+    /// Send command 12 with locally resolved login values and environment metadata.
     pub fn sync(
         &mut self,
         unix_seconds: i64,
@@ -233,7 +314,12 @@ impl Handshake {
             .ok_or_else(|| ProtocolError::new("session cipher not initialized"))?;
         let ciphertext = cipher.encrypt(&body);
         self.phase = Phase::SyncSent;
-        Ok(Frame::new(command::ACCOUNT_STATE, sequence, FINAL, ciphertext))
+        Ok(Frame::new(
+            command::ACCOUNT_STATE,
+            sequence,
+            FINAL,
+            ciphertext,
+        ))
     }
 }
 
@@ -271,26 +357,50 @@ mod tests {
 
         // Hello reproduces conformance hello-01.
         let hello = h.hello(90, 305419896, 1).unwrap();
-        assert_eq!(encode(&hello.pack()), "0022000000010002001bd12c9184c1ff4d74adb5b3d48f1f0301f46eeea8ea46f257ba34faf1d56e90e589");
+        assert_eq!(
+            encode(&hello.pack()),
+            "0022000000010002001bd12c9184c1ff4d74adb5b3d48f1f0301f46eeea8ea46f257ba34faf1d56e90e589"
+        );
         assert_eq!(h.phase(), Phase::HelloSent);
 
         // Challenge in, auth out reproduces conformance auth-basic.
-        let challenge: [u8; 16] = decode("000102030405060708090a0b0c0d0e0f").try_into().unwrap();
+        let challenge: [u8; 16] = decode("000102030405060708090a0b0c0d0e0f")
+            .try_into()
+            .unwrap();
         h.on_challenge(&challenge_reply(&challenge)).unwrap();
-        let client: [u8; 16] = decode("101112131415161718191a1b1c1d1e1f").try_into().unwrap();
+        let client: [u8; 16] = decode("101112131415161718191a1b1c1d1e1f")
+            .try_into()
+            .unwrap();
         let auth = h.auth(&client, 4660, None, 2).unwrap();
-        assert_eq!(encode(&auth.pack()), "0122000000020002007539d2f4e3124fe83ad20414147b8ede160f9ee70d0aee0e9fcfcfd4efb1ee5b8227");
+        assert_eq!(
+            encode(&auth.pack()),
+            "0122000000020002007539d2f4e3124fe83ad20414147b8ede160f9ee70d0aee0e9fcfcfd4efb1ee5b8227"
+        );
 
         // Auth result with TLV 7 / TLV 27 derives the documented keys.
         let tag27 = decode("202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f");
-        h.on_auth_result(&auth_result(4199, &[0x00], &tag27)).unwrap();
+        h.on_auth_result(&auth_result(4199, &[0x00], &tag27))
+            .unwrap();
         assert_eq!(h.phase(), Phase::SessionKeysReady);
-        assert_eq!(encode(h.session_key().unwrap()), "15643cc783ab813e27e8dd486ea7dfc5");
-        assert_eq!(encode(h.trade_key().unwrap()), "ee47d3d1b093ebb78e800fd4cf6b817f50d498a2cb874b3d7e74451d18122050");
+        assert_eq!(
+            encode(h.session_key().unwrap()),
+            "15643cc783ab813e27e8dd486ea7dfc5"
+        );
+        assert_eq!(
+            encode(h.trade_key().unwrap()),
+            "ee47d3d1b093ebb78e800fd4cf6b817f50d498a2cb874b3d7e74451d18122050"
+        );
         assert_eq!(h.server_build(), Some(4199));
 
         // Sync frame is command 12 and its body deciphers to the sync request.
-        let lv = login_value_wrapper(12345678, 5500, 4199, &challenge, 18446744073709551614, 81985529216486895);
+        let lv = login_value_wrapper(
+            12345678,
+            5500,
+            4199,
+            &challenge,
+            18446744073709551614,
+            81985529216486895,
+        );
         let frame = h.sync(1700000000, &lv, None, 3).unwrap();
         assert_eq!(h.phase(), Phase::SyncSent);
         assert!(h.sync(1700000000, &lv, None, 4).is_err());
@@ -298,7 +408,15 @@ mod tests {
         assert!(frame.is_final());
         let mut c = SessionCipher::new(h.session_key().unwrap()).unwrap();
         let body = c.decrypt(&frame.payload);
-        let expected = make_sync_request(12345678, 5500, 4199, 1700000000, lv.login_id, lv.extended_login_id, None);
+        let expected = make_sync_request(
+            12345678,
+            5500,
+            4199,
+            1700000000,
+            lv.login_id,
+            lv.extended_login_id,
+            None,
+        );
         assert_eq!(body, expected);
     }
 
@@ -309,14 +427,22 @@ mod tests {
         let client = [0u8; 16];
         assert!(h.auth(&client, 0, None, 2).is_err());
         // Cannot sync before the result.
-        let lv = LoginValues { login_id: 0, extended_login_id: 0, tag88_value: [0; 8], tag134_value: [0; 8] };
+        let lv = LoginValues {
+            login_id: 0,
+            extended_login_id: 0,
+            tag88_value: [0; 8],
+            tag134_value: [0; 8],
+        };
         assert!(h.sync(0, &lv, None, 3).is_err());
     }
 
     #[test]
     fn modern_environment_is_generated() {
         let h = Handshake::new(12345678, "ExamplePassword", 5500);
-        assert!(h.generated_environment().starts_with("file=terminal64.exe\tversion=5500\t"));
+        assert!(
+            h.generated_environment()
+                .starts_with("file=mt5-open\tversion=5500\t")
+        );
     }
 
     fn auth_sent() -> Handshake {
@@ -364,7 +490,12 @@ mod tests {
     fn malformed_or_missing_key_results_fail_without_partial_state() {
         let mut missing = vec![0; 44];
         missing[24..26].copy_from_slice(&5500i16.to_le_bytes());
-        for result in [vec![0; 43], missing, auth_result(5500, &[], &[1]), auth_result(-1, &[1], &[2])] {
+        for result in [
+            vec![0; 43],
+            missing,
+            auth_result(5500, &[], &[1]),
+            auth_result(-1, &[1], &[2]),
+        ] {
             let mut h = auth_sent();
             assert!(h.on_auth_result(&result).is_err());
             assert_eq!(h.phase(), Phase::Failed);
@@ -386,18 +517,27 @@ mod tests {
         assert_eq!(h.phase(), Phase::CertificateRequired);
         let mut rx = SessionCipher::new(h.session_key().unwrap()).unwrap();
         // Synthetic bytes test serialization only, not certificate validity/signing.
-        let cert = h.certificate_continuation(&[1, 2, 3], &[0x30, 0], 3).unwrap();
+        let cert = h
+            .certificate_continuation(&[1, 2, 3], &[0x30, 0], 3)
+            .unwrap();
         assert_eq!(cert.command, command::CERT_CONTINUATION);
         assert_eq!(cert.flags, FINAL);
         let plain = rx.decrypt(&cert.payload);
         assert_eq!(&plain[..16], &[0; 16]);
-        assert_eq!(crate::tlv::parse_tlvs(&plain[16..]).unwrap(), vec![(4, vec![3, 2, 1]), (3, vec![0x30, 0])]);
+        assert_eq!(
+            crate::tlv::parse_tlvs(&plain[16..]).unwrap(),
+            vec![(4, vec![3, 2, 1]), (3, vec![0x30, 0])]
+        );
         assert_eq!(h.phase(), Phase::SessionKeysReady);
         assert!(h.certificate_continuation(&[1], &[2], 4).is_err());
         let sync = h.sync(123, &lv, None, 4).unwrap();
         let tags = crate::tlv::parse_tlvs(&rx.decrypt(&sync.payload)).unwrap();
         let environment = &tags.iter().find(|(tag, _)| *tag == 127).unwrap().1;
-        let mut expected: Vec<u8> = h.generated_environment().encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
+        let mut expected: Vec<u8> = h
+            .generated_environment()
+            .encode_utf16()
+            .flat_map(|u| u.to_le_bytes())
+            .collect();
         expected.extend([0, 0]);
         assert_eq!(*environment, expected);
         assert_eq!(h.phase(), Phase::SyncSent);
@@ -407,11 +547,24 @@ mod tests {
     fn extensions_are_retained_and_repeated_keys_use_wire_order() {
         let mut h = auth_sent();
         let mut result = auth_result(5500, &[1], &[2]);
-        let extensions = vec![(28, vec![10]), (35, vec![20]), (99, vec![30]), (28, vec![40]), (7, vec![5]), (27, vec![6])];
+        let extensions = vec![
+            (28, vec![10]),
+            (35, vec![20]),
+            (99, vec![30]),
+            (28, vec![40]),
+            (7, vec![5]),
+            (27, vec![6]),
+        ];
         result.extend(encode_tlvs(&extensions));
         h.on_auth_result(&result).unwrap();
-        assert_eq!(h.session_key().unwrap(), derive_session_key(12345678, "ExamplePassword", &[5]).unwrap());
-        assert_eq!(h.trade_key().unwrap(), &derive_trade_key(12345678, "ExamplePassword", &[6]));
+        assert_eq!(
+            h.session_key().unwrap(),
+            derive_session_key(12345678, "ExamplePassword", &[5]).unwrap()
+        );
+        assert_eq!(
+            h.trade_key().unwrap(),
+            &derive_trade_key(12345678, "ExamplePassword", &[6])
+        );
         assert_eq!(&h.authentication_result().unwrap().tlvs[2..], &extensions);
         assert!(h.certificate_continuation(&[1], &[2], 3).is_err());
     }

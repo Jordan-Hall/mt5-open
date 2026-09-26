@@ -22,10 +22,17 @@ pub fn parse_tlvs(payload: &[u8]) -> Result<Vec<(u8, Vec<u8>)>> {
             return Err(ProtocolError::new("truncated TLV header"));
         }
         let tag = payload[off];
-        let size = i32::from_le_bytes([payload[off + 1], payload[off + 2], payload[off + 3], payload[off + 4]]);
+        let size = i32::from_le_bytes([
+            payload[off + 1],
+            payload[off + 2],
+            payload[off + 3],
+            payload[off + 4],
+        ]);
         off += 5;
         if size < 0 || size as usize > payload.len() - off {
-            return Err(ProtocolError::new(format!("invalid size {size} for TLV {tag}")));
+            return Err(ProtocolError::new(format!(
+                "invalid size {size} for TLV {tag}"
+            )));
         }
         let size = size as usize;
         out.push((tag, payload[off..off + size].to_vec()));
@@ -42,7 +49,11 @@ mod tests {
     fn roundtrip_and_rejections() {
         let items = vec![(7u8, b"a".to_vec()), (7u8, b"b".to_vec())];
         assert_eq!(parse_tlvs(&encode_tlvs(&items)).unwrap(), items);
-        for bad in [&b"\x07"[..], &b"\x07\xff\xff\xff\xff"[..], &b"\x07\x02\x00\x00\x00a"[..]] {
+        for bad in [
+            &b"\x07"[..],
+            &b"\x07\xff\xff\xff\xff"[..],
+            &b"\x07\x02\x00\x00\x00a"[..],
+        ] {
             assert!(parse_tlvs(bad).is_err());
         }
     }

@@ -2,8 +2,8 @@
 //!
 //! The additional login values (`login_id`, `extended_login_id` and the two
 //! wire tags) are computed from supplied `F28`/`F35` results by the documented
-//! wrapper arithmetic. The inner `F28`/`F35` mappings are external and are NOT
-//! reproduced here; their results are inputs. All additions wrap mod 2^64.
+//! wrapper arithmetic. [`crate::challenge`] computes `F28`/`F35` from the server
+//! programs. Additions wrap mod 2^64.
 
 use crate::md5::md5;
 use crate::tlv::encode_tlvs;
@@ -114,7 +114,10 @@ pub fn make_sync_request(
     let mut v103 = 0i64.to_le_bytes().to_vec();
     v103.extend_from_slice(&0u32.to_le_bytes());
     items.push((103, v103));
-    items.push((17, crate::hexutil::decode("f6eb0645cd1274f152d99793cbd8dad8")));
+    items.push((
+        17,
+        crate::hexutil::decode("f6eb0645cd1274f152d99793cbd8dad8"),
+    ));
     items.push((88, (login_id ^ K).to_le_bytes().to_vec()));
     if modern {
         items.push((134, (extended_login_id ^ K).to_le_bytes().to_vec()));
@@ -131,8 +134,17 @@ mod tests {
     #[test]
     fn login_value_wrapper_fixture() {
         // conformance_vectors login-wrap-4199.
-        let challenge: [u8; 16] = decode("000102030405060708090a0b0c0d0e0f").try_into().unwrap();
-        let v = login_value_wrapper(12345678, 5500, 4199, &challenge, 18446744073709551614, 81985529216486895);
+        let challenge: [u8; 16] = decode("000102030405060708090a0b0c0d0e0f")
+            .try_into()
+            .unwrap();
+        let v = login_value_wrapper(
+            12345678,
+            5500,
+            4199,
+            &challenge,
+            18446744073709551614,
+            81985529216486895,
+        );
         assert_eq!(v.login_id, 18289557989361181670);
         assert_eq!(v.extended_login_id, 219878749281440247);
         assert_eq!(encode(&v.tag88_value), "cc8a41fcfbfaf9f8");

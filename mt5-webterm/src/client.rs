@@ -97,6 +97,9 @@ impl Client {
                     break;
                 }
             }
+            // Every client handle is gone: close the socket rather than leave
+            // the server holding a session nobody will use again.
+            let _ = write.close().await;
         });
 
         let pending: Arc<Mutex<HashMap<u16, oneshot::Sender<Frame>>>> = Arc::new(Mutex::new(HashMap::new()));
@@ -144,11 +147,14 @@ impl Client {
         });
 
         let client = Client { tx, pending, quotes, symbols, account, login, server: server.to_string() };
-        let hb = client.clone();
+        // The heartbeat must not keep the session alive by itself: it holds
+        // only a weak sender and stops once every client handle is dropped.
+        let hb = client.tx.downgrade();
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(Duration::from_secs(3)).await;
-                if hb.send_cmd(CMD_HEARTBEAT, &[]).await.is_err() {
+                let Some(tx) = hb.upgrade() else { break };
+                if tx.send(build_command(CMD_HEARTBEAT, &[])).await.is_err() {
                     break;
                 }
             }

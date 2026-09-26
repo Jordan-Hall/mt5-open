@@ -78,16 +78,30 @@ mod tests {
         // conformance_vectors credential-01.
         let login = 12345678u64;
         let pw = "ExamplePassword";
-        let challenge: [u8; 16] = decode("000102030405060708090a0b0c0d0e0f").try_into().unwrap();
-        assert_eq!(encode(&password_hash(login, pw)), "fb4823de3770686792d6b73aec3396f9");
-        assert_eq!(encode(&dotnet_utf16(pw, Some(16))), "4500780061006d0070006c006500500061007300730077006f0072006400");
-        assert_eq!(encode(&challenge_response(login, pw, &challenge)), "6adecffd4d9459a1de1621b4323809c3");
+        let challenge: [u8; 16] = decode("000102030405060708090a0b0c0d0e0f")
+            .try_into()
+            .unwrap();
+        assert_eq!(
+            encode(&password_hash(login, pw)),
+            "fb4823de3770686792d6b73aec3396f9"
+        );
+        assert_eq!(
+            encode(&dotnet_utf16(pw, Some(16))),
+            "4500780061006d0070006c006500500061007300730077006f0072006400"
+        );
+        assert_eq!(
+            encode(&challenge_response(login, pw, &challenge)),
+            "6adecffd4d9459a1de1621b4323809c3"
+        );
     }
 
     #[test]
     fn hardware_fixture_and_checksum() {
         // conformance_vectors hardware-01.
-        assert_eq!(encode(&hardware_id(12345678)), "cf7445431d288e5e9c813a2af6c8ea79");
+        assert_eq!(
+            encode(&hardware_id(12345678)),
+            "cf7445431d288e5e9c813a2af6c8ea79"
+        );
         for login in [0u64, 1, 123456789, 0xFFFF_FFFF_FFFF_FFFF] {
             let d = hardware_id(login);
             let sum: u32 = d[1..].iter().map(|&b| b as u32).sum();
@@ -98,9 +112,15 @@ mod tests {
 
     #[test]
     fn password_truncation() {
-        assert_eq!(password_hash(12, &"A".repeat(17)), password_hash(12, &"A".repeat(16)));
+        assert_eq!(
+            password_hash(12, &"A".repeat(17)),
+            password_hash(12, &"A".repeat(16))
+        );
         let mut expect = "A".repeat(15);
         expect.push('\u{FFFD}');
-        assert_eq!(dotnet_utf16(&("A".repeat(15) + "\u{1F600}"), Some(16)), dotnet_utf16(&expect, None));
+        assert_eq!(
+            dotnet_utf16(&("A".repeat(15) + "\u{1F600}"), Some(16)),
+            dotnet_utf16(&expect, None)
+        );
     }
 }

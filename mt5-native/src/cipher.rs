@@ -68,13 +68,20 @@ impl SessionCipher {
         if key.is_empty() {
             return Err(ProtocolError::new("empty session key"));
         }
-        Ok(SessionCipher { key: key.to_vec(), previous_plain: 0, position: 0 })
+        Ok(SessionCipher {
+            key: key.to_vec(),
+            previous_plain: 0,
+            position: 0,
+        })
     }
 
     pub fn encrypt(&mut self, data: &[u8]) -> Vec<u8> {
         let mut out = vec![0u8; data.len()];
         for (i, &plain) in data.iter().enumerate() {
-            out[i] = plain ^ self.previous_plain.wrapping_add(self.key[self.position % self.key.len()]);
+            out[i] = plain
+                ^ self
+                    .previous_plain
+                    .wrapping_add(self.key[self.position % self.key.len()]);
             self.previous_plain = plain;
             self.position += 1;
         }
@@ -84,7 +91,10 @@ impl SessionCipher {
     pub fn decrypt(&mut self, data: &[u8]) -> Vec<u8> {
         let mut out = vec![0u8; data.len()];
         for (i, &cipher) in data.iter().enumerate() {
-            let plain = cipher ^ self.previous_plain.wrapping_add(self.key[self.position % self.key.len()]);
+            let plain = cipher
+                ^ self
+                    .previous_plain
+                    .wrapping_add(self.key[self.position % self.key.len()]);
             out[i] = plain;
             self.previous_plain = plain;
             self.position += 1;

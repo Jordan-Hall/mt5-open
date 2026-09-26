@@ -82,7 +82,7 @@ pub fn encode_quote(rec: &QuoteInput, command: u8) -> Result<Vec<u8>> {
     let mut w = BitWriter::new();
     let mask = rec.mask;
     w.packed(rec.symbol_id, 32)?;
-    
+
     let first_extension = if command == 50 {
         w.packed(rec.seconds, 64)?;
         w.packed(mask as i128, 64)?;
@@ -110,11 +110,10 @@ pub fn encode_quote(rec: &QuoteInput, command: u8) -> Result<Vec<u8>> {
     if command == 51 {
         for bit in [62u32, 63] {
             if mask & (1u64 << bit) != 0 {
-                let v = rec
-                    .additional_masks
-                    .get(&bit)
-                    .copied()
-                    .ok_or_else(|| ProtocolError::new(format!("missing additional mask {bit}")))?;
+                let v =
+                    rec.additional_masks.get(&bit).copied().ok_or_else(|| {
+                        ProtocolError::new(format!("missing additional mask {bit}"))
+                    })?;
                 w.packed(v, 64)?;
             }
         }
@@ -265,7 +264,11 @@ pub struct CompatQuote {
     pub time_ms: Option<i128>,
 }
 
-pub fn compatibility_quote_update(previous: &CompatQuote, tick: &QuoteRow, digits: i32) -> CompatQuote {
+pub fn compatibility_quote_update(
+    previous: &CompatQuote,
+    tick: &QuoteRow,
+    digits: i32,
+) -> CompatQuote {
     let mut result = previous.clone();
     result.time_ms = tick.time_ms;
     let scale = 10f64.powi(digits);
@@ -279,9 +282,10 @@ pub fn compatibility_quote_update(previous: &CompatQuote, tick: &QuoteRow, digit
     apply("ask_integer", &mut result.ask);
     apply("last_integer", &mut result.last);
     if let Some(vu) = tick.volume_units
-        && vu != 0 {
-            result.volume_units = Some(vu);
-        }
+        && vu != 0
+    {
+        result.volume_units = Some(vu);
+    }
     result
 }
 
@@ -295,12 +299,23 @@ mod tests {
         for &(b, v) in pairs {
             values.insert(b, v);
         }
-        QuoteInput { symbol_id, seconds, mask, values, additional_masks: BTreeMap::new() }
+        QuoteInput {
+            symbol_id,
+            seconds,
+            mask,
+            values,
+            additional_masks: BTreeMap::new(),
+        }
     }
 
     #[test]
     fn live_basic_layout() {
-        let inp = input(1001, 1700000000, 7, &[(0, 123450), (1, 123460), (2, 123455)]);
+        let inp = input(
+            1001,
+            1700000000,
+            7,
+            &[(0, 123450), (1, 123460), (2, 123455)],
+        );
         let d = &decode_quotes(&encode_quote(&inp, 50).unwrap(), 50).unwrap()[0];
         assert_eq!(d.seconds, 1700000000);
         assert_eq!(d.live_get("ask_integer"), Some(123460));
@@ -339,7 +354,10 @@ mod tests {
         let mut buf = encode_quote(&a, 50).unwrap();
         buf.extend(encode_quote(&b, 50).unwrap());
         let rows = decode_quotes(&buf, 50).unwrap();
-        assert_eq!(rows.iter().map(|r| r.symbol_id).collect::<Vec<_>>(), vec![1, 2]);
+        assert_eq!(
+            rows.iter().map(|r| r.symbol_id).collect::<Vec<_>>(),
+            vec![1, 2]
+        );
         assert_eq!(rows[1].live_get("ask_integer"), Some(234));
     }
 
@@ -348,7 +366,10 @@ mod tests {
         let inp = input(1, 1, 1, &[(0, 0)]);
         let d = &decode_quotes(&encode_quote(&inp, 50).unwrap(), 50).unwrap()[0];
         assert_eq!(d.live_get("bid_integer"), Some(0));
-        let prev = CompatQuote { bid: Some(1.25), ..Default::default() };
+        let prev = CompatQuote {
+            bid: Some(1.25),
+            ..Default::default()
+        };
         assert_eq!(compatibility_quote_update(&prev, d, 5).bid, Some(1.25));
     }
 
@@ -376,7 +397,10 @@ mod tests {
         let mask = (1u64 << 26) | (1u64 << 27);
         let inp = input(2, 123, mask, &[(27, 101), (26, 987)]);
         let d = &decode_quotes(&encode_quote(&inp, 51).unwrap(), 51).unwrap()[0];
-        assert_eq!(d.fields.iter().map(|(b, _)| *b).collect::<Vec<_>>(), vec![27, 26]);
+        assert_eq!(
+            d.fields.iter().map(|(b, _)| *b).collect::<Vec<_>>(),
+            vec![27, 26]
+        );
         assert_eq!(d.field_get(26), Some(987));
         assert_eq!(d.compatibility_time_ms, Some(123000));
     }

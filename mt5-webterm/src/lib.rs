@@ -1,5 +1,5 @@
 //! Native MetaQuotes web-terminal client: WebSocket to `wss://host:443/terminal`.
-//! No terminal64, no loginid HTTP.
+//! Connects directly to the broker web terminal.
 
 pub mod client;
 pub mod crypto;

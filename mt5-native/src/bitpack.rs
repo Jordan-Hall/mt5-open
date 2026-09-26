@@ -15,20 +15,43 @@ fn bitlen(v: u128) -> u32 {
 
 pub struct BitReader<'a> {
     data: &'a [u8],
+    limit: usize,
     pub position: usize,
     pub k: usize,
 }
 
 impl<'a> BitReader<'a> {
     pub fn new(data: &'a [u8]) -> Self {
-        BitReader { data, position: 0, k: 2 }
+        BitReader {
+            data,
+            limit: data.len() * 8,
+            position: 0,
+            k: 2,
+        }
     }
     pub fn with_position(data: &'a [u8], position: usize) -> Self {
-        BitReader { data, position, k: 2 }
+        BitReader {
+            data,
+            limit: data.len() * 8,
+            position,
+            k: 2,
+        }
+    }
+
+    pub fn with_limit(data: &'a [u8], limit: usize, k: usize) -> Result<Self> {
+        if limit > data.len() * 8 || !(1..=8).contains(&k) {
+            return Err(ProtocolError::new("invalid packed stream bounds"));
+        }
+        Ok(Self {
+            data,
+            limit,
+            position: 0,
+            k,
+        })
     }
 
     pub fn bits(&mut self, count: usize) -> Result<u64> {
-        if self.position + count > self.data.len() * 8 {
+        if count > 64 || self.position.saturating_add(count) > self.limit {
             return Err(ProtocolError::new("truncated bit field"));
         }
         let mut value = 0u64;
@@ -42,7 +65,7 @@ impl<'a> BitReader<'a> {
 
     /// Read a packed integer of the given storage `width`. When `signed`, the
     /// top storage bit is interpreted as a sign bit.
-    pub fn packed(&mut self, width: usize, signed: bool) -> Result<i128> {
+    fn prefix(&mut self, width: usize) -> Result<usize> {
         if !(1..=8).contains(&self.k) || !matches!(width, 8 | 16 | 32 | 64) {
             return Err(ProtocolError::new("unsupported packed width"));
         }
@@ -58,7 +81,19 @@ impl<'a> BitReader<'a> {
                 break;
             }
         }
-        let value = self.bits(2 * units as usize)? as u128;
+        Ok(2 * units as usize)
+    }
+
+    pub fn signed_magnitude(&mut self, width: usize) -> Result<i128> {
+        let length = self.prefix(width)?;
+        let negative = self.bits(1)? != 0;
+        let value = self.bits(length)? as i128;
+        Ok(if negative { -value } else { value })
+    }
+
+    pub fn packed(&mut self, width: usize, signed: bool) -> Result<i128> {
+        let length = self.prefix(width)?;
+        let value = self.bits(length)? as u128;
         if signed && value & (1u128 << (width - 1)) != 0 {
             Ok(value as i128 - (1i128 << width))
         } else {
@@ -85,7 +120,11 @@ pub struct BitWriter {
 
 impl BitWriter {
     pub fn new() -> Self {
-        BitWriter { data: Vec::new(), position: 0, k: 2 }
+        BitWriter {
+            data: Vec::new(),
+            position: 0,
+            k: 2,
+        }
     }
 
     pub fn bits(&mut self, value: u128, count: usize) -> Result<()> {
@@ -121,6 +160,26 @@ impl BitWriter {
         self.bits(units as u128, self.k)?;
         self.bits(masked, length)?;
         Ok(())
+    }
+
+    pub fn signed_magnitude(&mut self, value: i128, width: usize) -> Result<()> {
+        if !matches!(width, 8 | 16 | 32 | 64)
+            || value.unsigned_abs() >= (1u128 << width)
+            || !(1..=8).contains(&self.k)
+        {
+            return Err(ProtocolError::new("signed magnitude outside storage width"));
+        }
+        let magnitude = value.unsigned_abs();
+        let mut units = bitlen(magnitude).div_ceil(2) as u64;
+        let length = units as usize * 2;
+        let sentinel = (1u64 << self.k) - 1;
+        while units >= sentinel {
+            self.bits(sentinel as u128, self.k)?;
+            units -= sentinel;
+        }
+        self.bits(units as u128, self.k)?;
+        self.bits(u128::from(value < 0), 1)?;
+        self.bits(magnitude, length)
     }
 
     pub fn strict_boundary(&mut self) -> Result<()> {

@@ -13,7 +13,7 @@ use std::net::{TcpListener, TcpStream};
 use std::thread;
 
 use mt5_native::frame::Frame;
-use mt5_session::Session;
+use mt5_session::connection::Connection as Session;
 
 /// A listener that hands the test the address and the accepted socket.
 fn server() -> (String, std::sync::mpsc::Receiver<TcpStream>) {
@@ -39,7 +39,11 @@ fn a_frame_survives_the_round_trip() {
 
     let mut buffer = vec![0u8; 1024];
     let read = peer.read(&mut buffer).expect("server read");
-    assert_eq!(&buffer[..read], &sent.pack()[..], "the bytes on the wire are the packed frame");
+    assert_eq!(
+        &buffer[..read],
+        &sent.pack()[..],
+        "the bytes on the wire are the packed frame"
+    );
 }
 
 #[test]
@@ -74,12 +78,16 @@ fn a_connection_dying_mid_frame_is_an_error_not_a_message() {
     let mut peer = accepted.recv().expect("accept");
 
     let whole = Frame::new(0, 1, 0, b"a payload long enough to cut".to_vec()).pack();
-    peer.write_all(&whole[..whole.len() / 2]).expect("half a frame");
+    peer.write_all(&whole[..whole.len() / 2])
+        .expect("half a frame");
     peer.flush().expect("flush");
     drop(peer);
 
     let outcome = session.next_frame();
-    assert!(outcome.is_err(), "a truncated frame must not be handed out as a message");
+    assert!(
+        outcome.is_err(),
+        "a truncated frame must not be handed out as a message"
+    );
 }
 
 #[test]

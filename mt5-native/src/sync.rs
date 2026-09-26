@@ -8,6 +8,9 @@
 
 use crate::error::{ProtocolError, Result};
 
+mod account;
+pub use account::{AccessPoint, SynchronizedState, parse_sync_account, parse_synchronized_state};
+
 pub struct SegmentedReader {
     chunks: Vec<Vec<u8>>,
     chunk_index: usize,
@@ -26,7 +29,9 @@ impl SegmentedReader {
     }
 
     pub fn byte(&mut self) -> Result<u8> {
-        while self.chunk_index < self.chunks.len() && self.offset == self.chunks[self.chunk_index].len() {
+        while self.chunk_index < self.chunks.len()
+            && self.offset == self.chunks[self.chunk_index].len()
+        {
             self.chunk_index += 1;
             self.offset = 0;
         }
@@ -73,7 +78,11 @@ mod tests {
     fn zero_tag_scan_across_all_fragment_boundaries() {
         let payload = b"\x00\x11\x99\x00\x17routing-body".to_vec();
         for split in 0..=payload.len() {
-            let chunks = vec![payload[..split].to_vec(), Vec::new(), payload[split..].to_vec()];
+            let chunks = vec![
+                payload[..split].to_vec(),
+                Vec::new(),
+                payload[split..].to_vec(),
+            ];
             let mut r = SegmentedReader::new(chunks);
             let (tag, skipped) = r.sync_tag().unwrap();
             assert_eq!(tag, 23);

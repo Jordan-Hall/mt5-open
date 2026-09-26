@@ -61,16 +61,41 @@ pub fn make_tick_history_request(
     day: i32,
     request_parameter: u32,
 ) -> Result<Vec<u8>> {
+    make_cached_tick_history_request(symbol, year, month, day, request_parameter, &[])
+}
+
+pub fn make_cached_tick_history_request(
+    symbol: &str,
+    year: i32,
+    month: i32,
+    day: i32,
+    request_parameter: u32,
+    cache: &[crate::tick_history::TickCache],
+) -> Result<Vec<u8>> {
+    if symbol.is_empty()
+        || symbol.encode_utf16().count() > 31
+        || symbol.contains('\0')
+        || cache.len() > 4096
+    {
+        return Err(ProtocolError::new("invalid tick history symbol/cache size"));
+    }
     let token = date_token(year, month, day)?;
     let mut out = vec![14u8];
     out.extend_from_slice(&utf16_field(symbol, 64));
     out.extend_from_slice(&token.to_le_bytes());
     out.extend_from_slice(&request_parameter.to_le_bytes());
-    out.extend_from_slice(&0u32.to_le_bytes()); // cache count
-    out.extend_from_slice(&request_descriptor_499(symbol, token));
-    if out.len() != 574 {
-        return Err(ProtocolError::new("tick-history request must be 574 bytes"));
+    out.extend_from_slice(&(cache.len() as u32).to_le_bytes());
+    for c in cache {
+        out.extend_from_slice(&c.date.to_le_bytes());
+        out.extend_from_slice(&[0; 2]);
+        out.extend_from_slice(&c.time.to_le_bytes());
+        out.extend_from_slice(&c.size.to_le_bytes());
+        out.extend_from_slice(&[0; 4]);
+        out.extend_from_slice(&c.flags.to_le_bytes());
+        out.extend_from_slice(&[0; 2]);
+        out.extend_from_slice(&c.crc.to_le_bytes());
     }
+    out.extend_from_slice(&request_descriptor_499(symbol, token));
     Ok(out)
 }
 
@@ -99,5 +124,22 @@ mod tests {
         assert_eq!(body.len(), 574);
         assert_eq!(body[0], 14);
         assert_eq!(request_descriptor_499("EURUSD", 27502).len(), 499);
+    }
+    #[test]
+    fn tick_continuation_replays_cache_tokens_without_recomputing_them() {
+        let cache = crate::tick_history::TickCache {
+            date: 27502,
+            time: 42,
+            size: 128,
+            flags: 6,
+            crc: 0xdeadbeef,
+        };
+        let bytes = make_cached_tick_history_request("EURUSD", 2023, 11, 14, 0, &[cache]).unwrap();
+        assert_eq!(bytes.len(), 598);
+        assert_eq!(&bytes[71..75], &1u32.to_le_bytes());
+        assert_eq!(&bytes[75..77], &27502u16.to_le_bytes());
+        assert_eq!(&bytes[79..83], &42i32.to_le_bytes());
+        assert_eq!(&bytes[91..93], &6u16.to_le_bytes());
+        assert_eq!(&bytes[95..99], &0xdeadbeefu32.to_le_bytes());
     }
 }

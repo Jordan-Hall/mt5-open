@@ -26,7 +26,8 @@ pub struct AccountState {
     /// Realised money in the account.
     pub balance: f64,
     pub credit: f64,
-    /// Margin currently blocked by open positions.
+    /// Unclassified ledger figure. Observed negative values prove this is not
+    /// used margin; applications must not derive free margin from it.
     pub blocked: f64,
     pub leverage: i32,
     pub trade_flags: i32,
@@ -82,7 +83,9 @@ pub fn parse_account_rec(rec: &[u8]) -> Result<AccountState> {
 /// prefix. Returns one `AccountState` per record.
 pub fn parse_account_update_19(body: &[u8]) -> Result<Vec<AccountState>> {
     if body.len() < 5 {
-        return Err(ProtocolError::new("account update too short for subtype + count"));
+        return Err(ProtocolError::new(
+            "account update too short for subtype + count",
+        ));
     }
     if body[0] != 19 {
         return Err(ProtocolError::new("not a subtype-19 account update"));
@@ -116,7 +119,14 @@ mod tests {
     /// A synthetic record with known numbers at the documented offsets. This
     /// tests the offset arithmetic and the little-endian decode; the offsets
     /// themselves are the ones the conformance layout check holds contiguous.
-    fn record_with(login: u64, balance: f64, credit: f64, blocked: f64, leverage: i32, flags: i32) -> Vec<u8> {
+    fn record_with(
+        login: u64,
+        balance: f64,
+        credit: f64,
+        blocked: f64,
+        leverage: i32,
+        flags: i32,
+    ) -> Vec<u8> {
         let mut r = vec![0u8; ACCOUNT_REC_SIZE];
         r[0..8].copy_from_slice(&login.to_le_bytes());
         r[456..460].copy_from_slice(&flags.to_le_bytes());
