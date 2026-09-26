@@ -82,6 +82,9 @@ pub struct Deal {
     pub volume: f64,
     pub price: f64,
     pub profit: f64,
+    pub commission: f64,
+    pub swap: f64,
+    /// Seconds, as the server sends them.
     pub time: i64,
     pub comment: String,
 }
@@ -317,51 +320,43 @@ pub fn parse_orders(body: &[u8]) -> Vec<Order> {
     out
 }
 
+/// Bytes in one web-terminal deal record: i64 ticket, w64 external id, i64
+/// order, u32 time, u32, w64 symbol, u32, u32 type, 4 x f64 (price first),
+/// u64 volume, 5 x f64 (profit, _, _, commission, swap), 2 x i64, w64 comment,
+/// f64, 3 x u32, 2 x i32, f64.
+pub const DEAL_REC_SIZE: usize = 356;
+
 pub fn parse_deals(body: &[u8]) -> Vec<Deal> {
     if body.len() < 4 {
         return vec![];
     }
     let count = u32_at(body) as usize;
-    // DEAL_SCHEMA first fields: i64 ticket, w64, i64 order, u32, u32, w64 symbol, u32, u32 type, f64 price...
-    let mut o = 4usize;
-    let mut out = Vec::new();
-    for _ in 0..count {
-        if o + 8 + 64 + 8 + 4 + 4 + 64 + 4 + 4 + 8 > body.len() {
-            break;
-        }
-        let ticket = i64_at(&body[o..]);
-        o += 8;
-        o += 64;
-        let order = i64_at(&body[o..]);
-        o += 8;
-        o += 4;
-        o += 4;
-        let symbol = from_utf16_le(&body[o..o + 64]);
-        o += 64;
-        o += 4;
-        let side = u32_at(&body[o..]);
-        o += 4;
-        let price = f64_at(&body[o..]);
-        o += 8;
-        o += 8;
-        o += 8;
-        o += 8;
-        let volume = u64_at(&body[o..]) as f64 / LOT_MULTIPLIER;
-        o += 8;
-        let profit = f64_at(&body[o..]);
-        o += 8;
-        o += 8;
-        o += 8;
-        o += 8;
-        o += 8;
-        o += 8;
-        o += 8;
-        let comment = from_utf16_le(&body[o..o + 64.min(body.len().saturating_sub(o))]);
-        o += 64;
-        o += 8 + 4 + 4 + 4 + 4 + 4 + 8;
-        out.push(Deal { ticket, order, symbol, side, volume, price, profit, time: 0, comment });
-    }
-    out
+    // The previous walk stepped 364 bytes per record, so every deal after the
+    // first was read from the wrong place. A newer server may append fields;
+    // when the body divides evenly into larger records, step by that.
+    let records = body.len() - 4;
+    let size = match count {
+        0 => return vec![],
+        n if records % n == 0 && records / n >= DEAL_REC_SIZE => records / n,
+        _ => DEAL_REC_SIZE,
+    };
+    body[4..]
+        .chunks_exact(size)
+        .take(count)
+        .map(|rec| Deal {
+            ticket: i64_at(rec),
+            order: i64_at(&rec[72..]),
+            time: u32_at(&rec[80..]) as i64,
+            symbol: from_utf16_le(&rec[88..152]),
+            side: u32_at(&rec[156..]),
+            price: f64_at(&rec[160..]),
+            volume: u64_at(&rec[192..]) as f64 / LOT_MULTIPLIER,
+            profit: f64_at(&rec[200..]),
+            commission: f64_at(&rec[224..]),
+            swap: f64_at(&rec[232..]),
+            comment: from_utf16_le(&rec[256..320]),
+        })
+        .collect()
 }
 
 pub fn parse_candles(body: &[u8]) -> Vec<Candle> {
@@ -392,4 +387,70 @@ pub fn parse_trade_event(body: &[u8]) -> Option<(u32, i64, i64, i64, f64, f64)> 
     let volume = i64_at(&body[ap + 20..]);
     let price = f64_at(&body[ap + 28..]);
     Some((retcode, deal, order, volume, price, volume as f64 / LOT_MULTIPLIER))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::protocol::utf16_le;
+
+    /// One synthetic record laid out field by field from the deal schema, with
+    /// a distinct value in every slot so a misread offset shows.
+    fn deal_record(ticket: i64, time: u32, symbol: &str, side: u32, comment: &str) -> Vec<u8> {
+        let mut r = Vec::new();
+        r.extend(ticket.to_le_bytes());
+        r.extend(utf16_le("ext", 64));
+        r.extend((ticket + 1).to_le_bytes()); // order
+        r.extend(time.to_le_bytes());
+        r.extend(7u32.to_le_bytes());
+        r.extend(utf16_le(symbol, 64));
+        r.extend(9u32.to_le_bytes());
+        r.extend(side.to_le_bytes());
+        for v in [2650.5f64, 2600.0, 2700.0, 11.0] {
+            r.extend(v.to_le_bytes());
+        }
+        r.extend(2_000_000u64.to_le_bytes()); // 0.02 lots
+        for v in [12.34f64, 13.0, 14.0, -0.7, -1.25] {
+            r.extend(v.to_le_bytes()); // profit, _, _, commission, swap
+        }
+        r.extend(555i64.to_le_bytes());
+        r.extend(666i64.to_le_bytes());
+        r.extend(utf16_le(comment, 64));
+        r.extend(17.0f64.to_le_bytes());
+        for v in [18u32, 19, 20] {
+            r.extend(v.to_le_bytes());
+        }
+        for v in [21i32, 22] {
+            r.extend(v.to_le_bytes());
+        }
+        r.extend(23.0f64.to_le_bytes());
+        assert_eq!(r.len(), DEAL_REC_SIZE);
+        r
+    }
+
+    #[test]
+    fn every_deal_in_a_history_reply_is_read_from_its_own_record() {
+        let mut body = 2u32.to_le_bytes().to_vec();
+        body.extend(deal_record(1001, 1_758_800_000, "XAUUSD", 0, "first"));
+        body.extend(deal_record(2002, 1_758_803_600, "BTCUSD", 1, "second"));
+        let deals = parse_deals(&body);
+        assert_eq!(deals.len(), 2);
+        let (a, b) = (&deals[0], &deals[1]);
+        assert_eq!((a.ticket, a.order, a.time, a.symbol.as_str(), a.side), (1001, 1002, 1_758_800_000, "XAUUSD", 0));
+        assert_eq!((a.price, a.volume, a.profit, a.commission, a.swap), (2650.5, 0.02, 12.34, -0.7, -1.25));
+        assert_eq!(a.comment, "first");
+        // The second record is where a wrong stride shows.
+        assert_eq!((b.ticket, b.order, b.time, b.symbol.as_str(), b.side), (2002, 2003, 1_758_803_600, "BTCUSD", 1));
+        assert_eq!(b.comment, "second");
+    }
+
+    #[test]
+    fn a_short_or_empty_deal_reply_yields_what_is_whole() {
+        assert!(parse_deals(&[]).is_empty());
+        assert!(parse_deals(&0u32.to_le_bytes()).is_empty());
+        let mut body = 2u32.to_le_bytes().to_vec();
+        body.extend(deal_record(1, 1, "EURUSD", 0, ""));
+        body.extend([0u8; 100]);
+        assert_eq!(parse_deals(&body).len(), 1);
+    }
 }
