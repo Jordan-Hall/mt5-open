@@ -43,6 +43,12 @@ cargo test --locked -p mt5_webterm --lib -j1
 Protocol vectors are included. `MT5_PROTOCOL_FIXTURES` optionally selects an
 external fixture directory. Tests use synthetic credentials and loopback sockets.
 
-This project is not affiliated with MetaQuotes. Native live verification included
+Native live verification included
 bounded demo trades, three demo accounts and one real account used only for reads. This is limited observed
 compatibility, not universal MT5 support. See [provenance](PROVENANCE.md) before redistribution.
+
+## Licence and trademarks
+
+No licence is granted: all rights reserved. MetaTrader, MetaQuotes and related
+marks belong to MetaQuotes Ltd and its owners; this project is not affiliated
+with or endorsed by them. See [NOTICE.md](NOTICE.md).
