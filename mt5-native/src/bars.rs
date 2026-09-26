@@ -78,6 +78,12 @@ fn container(r: &mut Reader, symbol: &str) -> Result<Vec<Bar>> {
             1 if anchored => b.packed(64, true)?,
             _ => return Err(ProtocolError::new("invalid bar tag or missing anchor")),
         };
+        // Stock CFDs with a gap inside a trading session send an empty run
+        // before the skip that covers it. Every container of such replies
+        // decodes to exactly its declared bar count and bit length this way.
+        if run == 0 && tag == 1 {
+            continue;
+        }
         if run <= 0 || run as usize > count as usize - bars.len() {
             return Err(ProtocolError::new("bar run exceeds declared count"));
         }
@@ -180,6 +186,11 @@ mod tests {
     }
 
     fn fixture() -> Vec<u8> {
+        fixture_with_gap(false)
+    }
+
+    /// Two bars; with `gap`, an empty run and a one-minute skip sit between them.
+    fn fixture_with_gap(gap: bool) -> Vec<u8> {
         let mut w = BitWriter::new();
         for value in [0, 1, 600] {
             w.packed(value, 64).unwrap();
@@ -191,6 +202,11 @@ mod tests {
         signed(&mut w, -3);
         w.packed(9, 64).unwrap();
         signed(&mut w, 2);
+        if gap {
+            for value in [1, 0, 2, 1] {
+                w.packed(value, 64).unwrap();
+            }
+        }
         w.packed(1, 64).unwrap();
         w.packed(1, 64).unwrap();
         signed(&mut w, 5);
@@ -249,6 +265,14 @@ mod tests {
                 spread: 3
             }
         );
+    }
+
+    #[test]
+    fn an_empty_run_before_a_session_gap_is_not_a_bar() {
+        let rows = decode_bar_history(&fixture_with_gap(true)).unwrap().remove(0).bars;
+        assert_eq!(rows.len(), 2);
+        assert_eq!((rows[0].time, rows[1].time), (600, 720));
+        assert_eq!((rows[1].open, rows[1].close, rows[1].tick_volume), (100.02, 100.0, 11));
     }
 
     #[test]
