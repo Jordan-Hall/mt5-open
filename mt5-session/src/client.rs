@@ -16,6 +16,15 @@ use std::time::{Duration, Instant};
 mod history;
 mod margin;
 
+/// A request goes out after this long without sending anything, and the
+/// broker answers it.
+const KEEPALIVE: Duration = Duration::from_secs(10);
+/// With keepalives answered, a live connection is never silent this long: on
+/// a closed market the answers were at most 20 s apart. A connection whose
+/// peer vanished without closing it (no FIN, no RST) would otherwise poll
+/// empty forever while quotes silently stop.
+pub const RECEIVE_DEADLINE: Duration = Duration::from_secs(45);
+
 #[derive(Clone)]
 pub struct Config {
     pub address: String,
@@ -49,6 +58,8 @@ pub struct Client {
     depth_subscriptions: BTreeSet<u32>,
     changed_depth: Vec<DepthRecord>,
     last_send: Instant,
+    last_receive: Instant,
+    receive_deadline: Duration,
     healthy: bool,
 }
 
@@ -83,6 +94,8 @@ impl Client {
             depth_subscriptions: BTreeSet::new(),
             changed_depth: Vec::new(),
             last_send: Instant::now(),
+            last_receive: Instant::now(),
+            receive_deadline: RECEIVE_DEADLINE,
             healthy: true,
         })
     }
@@ -216,15 +229,31 @@ impl Client {
     }
 
     fn poll_inner(&mut self, timeout: Duration) -> Result<Option<Message>> {
-        if self.last_send.elapsed() >= Duration::from_secs(10) {
+        if self.last_send.elapsed() >= KEEPALIVE {
             self.session.send_request(10, &[])?;
             self.last_send = Instant::now();
         }
         let message = self.session.poll_message(timeout)?;
-        if let Some(m) = &message {
-            self.apply(m)?;
+        match &message {
+            Some(m) => {
+                self.last_receive = Instant::now();
+                self.apply(m)?;
+            }
+            None if self.last_receive.elapsed() >= self.receive_deadline => {
+                return Err(ProtocolError::new(format!(
+                    "broker sent nothing for {} s",
+                    self.receive_deadline.as_secs()
+                )));
+            }
+            None => (),
         }
         Ok(message)
+    }
+
+    /// How long the connection may stay silent before it is presumed dead.
+    /// Defaults to [`RECEIVE_DEADLINE`]; shorter only makes sense in tests.
+    pub fn set_receive_deadline(&mut self, deadline: Duration) {
+        self.receive_deadline = deadline;
     }
 
     fn apply(&mut self, m: &Message) -> Result<()> {

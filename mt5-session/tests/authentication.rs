@@ -65,6 +65,20 @@ fn server_exchange(
     subscription: bool,
     update: Option<(u64, i32)>,
 ) -> (String, thread::JoinHandle<()>) {
+    server_with(status, returned_login, wrong_sequence, subscription, update, None)
+}
+
+/// With `silent`, the broker completes synchronization, then keeps the
+/// connection open and sends nothing for that long: a peer that vanished
+/// without closing the socket.
+fn server_with(
+    status: i32,
+    returned_login: u64,
+    wrong_sequence: bool,
+    subscription: bool,
+    update: Option<(u64, i32)>,
+    silent: Option<std::time::Duration>,
+) -> (String, thread::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap().to_string();
     let worker = thread::spawn(move || {
@@ -141,6 +155,11 @@ fn server_exchange(
         let mut wire = Frame::new(12, seq, COMPRESSED, first).pack();
         wire.extend(Frame::new(10, 0, FINAL, vec![]).pack());
         wire.extend(Frame::new(12, seq, COMPRESSED | FINAL, last).pack());
+        if let Some(hold) = silent {
+            socket.write_all(&wire).unwrap();
+            thread::sleep(hold);
+            return;
+        }
         wire.extend(
             Frame::new(
                 50,
@@ -376,6 +395,37 @@ fn invalid_client_state_cannot_submit_another_trade() {
             .to_string()
             .contains("fresh synchronization")
     );
+    drop(client);
+    worker.join().unwrap();
+}
+
+#[test]
+fn a_connection_that_goes_silent_is_declared_dead() {
+    use mt5_session::client::{Client, Config};
+    use std::time::{Duration, Instant};
+    let (address, worker) = server_with(0, LOGIN, false, false, None, Some(Duration::from_secs(4)));
+    let mut client = Client::connect(&Config {
+        address,
+        login: LOGIN,
+        password: PASSWORD.into(),
+        client_build: 6182,
+        profile: profile(),
+    })
+    .unwrap();
+    client.set_receive_deadline(Duration::from_millis(600));
+    let started = Instant::now();
+    let error = loop {
+        match client.poll(Duration::from_millis(100)) {
+            Ok(_) => assert!(started.elapsed() < Duration::from_secs(3), "silence was never noticed"),
+            Err(e) => break e,
+        }
+    };
+    assert!(error.to_string().contains("sent nothing"), "{error}");
+    // The socket is still open on the broker side; the client must not wait for it.
+    assert!(started.elapsed() < Duration::from_secs(3));
+    let mut trade = vec![0; 800];
+    trade[..4].copy_from_slice(&1i32.to_le_bytes());
+    assert!(client.trade(&trade).err().unwrap().to_string().contains("fresh synchronization"));
     drop(client);
     worker.join().unwrap();
 }
