@@ -255,15 +255,18 @@ impl Session {
         Ok(live.client.as_ref().unwrap().clone())
     }
 
-    /// Subscribe `names` on `c` unless already subscribed on it.
-    async fn ensure_subscribed(&self, c: &Client, names: &[String]) {
+    /// Subscribe `names` on `c` unless already subscribed on it. Returns the
+    /// names subscribed by this call.
+    async fn ensure_subscribed(&self, c: &Client, names: &[String]) -> Vec<String> {
         let fresh: Vec<String> = {
             let live = self.live.lock().await;
             names.iter().filter(|s| !live.subscribed.contains(*s)).cloned().collect()
         };
         if !fresh.is_empty() && c.subscribe(&fresh).await.is_ok() {
-            self.live.lock().await.subscribed.extend(fresh);
+            self.live.lock().await.subscribed.extend(fresh.iter().cloned());
+            return fresh;
         }
+        Vec::new()
     }
 
     /// Seconds the server clock runs ahead of UTC, once a session has dialled.
@@ -297,16 +300,24 @@ impl Session {
         let mut streamed: Vec<String> = wanted.iter().cloned().chain(pairs.values().map(|p| p.name.clone())).collect();
         streamed.sort();
         streamed.dedup();
-        self.ensure_subscribed(&c, &streamed).await;
+        let fresh = self.ensure_subscribed(&c, &streamed).await;
+        // Only a symbol subscribed just now is worth waiting for, and only
+        // once, briefly: its first quote (or the closed market's last one)
+        // follows the subscription. A symbol that has been subscribed a while
+        // without a quote will not get one by asking again every snapshot.
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(1500);
         let mut quotes = HashMap::new();
-        for sym in &streamed {
-            let mut q = c.quote(sym).await;
-            if q.as_ref().map_or(true, |x| x.bid <= 0.0 || x.ask <= 0.0) {
-                q = tokio::time::timeout(Duration::from_millis(1500), c.wait_quote(sym)).await.ok().and_then(|r| r.ok());
+        loop {
+            for sym in &streamed {
+                if let Some(x) = c.quote(sym).await.filter(|x| x.bid > 0.0 && x.ask > 0.0) {
+                    quotes.insert(sym.clone(), x);
+                }
             }
-            if let Some(x) = q.filter(|x| x.bid > 0.0 && x.ask > 0.0) {
-                quotes.insert(sym.clone(), x);
+            let waiting = fresh.iter().any(|s| !quotes.contains_key(s));
+            if !waiting || tokio::time::Instant::now() >= deadline {
+                break;
             }
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
         let symbols = c.symbols().await;
         let tick_values = wanted
